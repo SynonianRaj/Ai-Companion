@@ -2,7 +2,7 @@
 
 A caring AI girlfriend or boyfriend for adults who feel lonely. They have a life of their own, remember you, message you first, and talk the way a real friend texts. Always honest that they are an AI.
 
-> **Status:** Early stage. The plan is written (docs v8). Building the first working prototype is the next step. Update this line as the project moves.
+> **Status:** Early stage. The plan is written (docs v8). Building the first working prototype is the next step.
 
 ## The idea in one minute
 
