@@ -1,5 +1,10 @@
 import { api } from "./api.js";
 
+// Check if running directly as local file
+if (window.location.protocol === "file:") {
+  alert("⚠️ Notice: Please access AI Companion via http://127.0.0.1:8000 after running 'python app/main.py' in the backend directory, rather than opening index.html directly as a local file.");
+}
+
 // Application State
 const state = {
   user: JSON.parse(localStorage.getItem("aanya_user") || "null"),
@@ -9,9 +14,9 @@ const state = {
 };
 
 // Register Service Worker
-if ("serviceWorker" in navigator) {
+if ("serviceWorker" in navigator && window.location.protocol.startsWith("http")) {
   window.addEventListener("load", () => {
-    navigator.serviceWorker.register("/public/sw.js").catch((err) => {
+    navigator.serviceWorker.register("./public/sw.js").catch((err) => {
       console.log("ServiceWorker registration failed: ", err);
     });
   });
@@ -94,8 +99,8 @@ async function loadChatHistory() {
     if (messages.length === 0) {
       // Prompt user with start suggestion
       appendMessage("assistant", (
-        "Hey! Ek second... kya tumhara bhi oat milk iced latte tha? ☕ Wait, I think the barista "
-        "swapped our cups! Indiranagar cafes on a weekday afternoon are pure chaos, honestly. "
+        "Hey! Ek second... kya tumhara bhi oat milk iced latte tha? ☕ Wait, I think the barista " +
+        "swapped our cups! Indiranagar cafes on a weekday afternoon are pure chaos, honestly. " +
         "I'm Aanya btw :)"
       ));
     } else {
@@ -175,6 +180,11 @@ async function handleSendMessage() {
   const text = chatInput.value.trim();
   if (!text) return;
 
+  if (!state.user || !state.relationship || !state.relationship.id) {
+    showOnboarding();
+    return;
+  }
+
   appendMessage("user", text);
   chatInput.value = "";
   sendBtn.disabled = true;
@@ -232,6 +242,10 @@ async function refreshRelationshipStatus() {
 
 // Settings Modal & Memory Inspector
 settingsBtn.addEventListener("click", async () => {
+  if (!state.user || !state.relationship || !state.relationship.id) {
+    showOnboarding();
+    return;
+  }
   settingsModal.style.display = "flex";
   loadSettingsView();
 });
@@ -240,7 +254,16 @@ document.getElementById("close-settings-btn").addEventListener("click", () => {
   settingsModal.style.display = "none";
 });
 
+document.getElementById("reset-session-btn").addEventListener("click", () => {
+  if (confirm("Reset current session and re-open 18+ onboarding?")) {
+    localStorage.removeItem("aanya_user");
+    localStorage.removeItem("aanya_rel");
+    window.location.reload();
+  }
+});
+
 async function loadSettingsView() {
+  if (!state.relationship || !state.relationship.id) return;
   try {
     const settings = await api.getSettings(state.relationship.id);
     document.getElementById("realism-toggle").checked = settings.emotional_realism_enabled;
