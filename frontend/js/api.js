@@ -1,14 +1,15 @@
 const API_BASE = "/api";
 
 export const api = {
-  async register(username, ageConfirmed, aiDisclosureAccepted) {
+  async register(username, ageConfirmed, aiAccepted, city = null) {
     const res = await fetch(`${API_BASE}/auth/register`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         username,
         age_confirmed: ageConfirmed,
-        ai_disclosure_accepted: aiDisclosureAccepted
+        ai_disclosure_accepted: aiDisclosureAccepted,
+        city: city && city.trim() ? city.trim() : null
       })
     });
     if (!res.ok) {
@@ -24,19 +25,41 @@ export const api = {
     return res.json();
   },
 
-  async sendMessage(relationshipId, message) {
+  async sendMessage(relationshipId, options) {
+    // Options can be a string (legacy) or an object
+    const payload = { relationship_id: relationshipId };
+    if (typeof options === "string") {
+      payload.message = options;
+      payload.pacing_mode = "realistic";
+    } else {
+      if (options.messages && Array.isArray(options.messages)) {
+        payload.messages = options.messages;
+      } else if (options.message) {
+        payload.message = options.message;
+      }
+      payload.pacing_mode = options.pacingMode || "realistic";
+      if (options.clientMsgId) payload.client_msg_id = options.clientMsgId;
+    }
+
     const res = await fetch(`${API_BASE}/chat/send`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        relationship_id: relationshipId,
-        message
-      })
+      body: JSON.stringify(payload)
     });
     if (!res.ok) {
       const err = await res.json();
       throw new Error(err.detail || "Failed to send message");
     }
+    return res.json();
+  },
+
+  async skipWait(relationshipId) {
+    const res = await fetch(`${API_BASE}/chat/skip-wait`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ relationship_id: relationshipId })
+    });
+    if (!res.ok) throw new Error("Failed to skip wait");
     return res.json();
   },
 
@@ -80,11 +103,11 @@ export const api = {
     return res.json();
   },
 
-  async updateSettings(relationshipId, updateData) {
+  async updateSettings(relationshipId, payload) {
     const res = await fetch(`${API_BASE}/settings/relationship?relationship_id=${relationshipId}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(updateData)
+      body: JSON.stringify(payload)
     });
     if (!res.ok) throw new Error("Failed to update settings");
     return res.json();
@@ -96,12 +119,14 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ days })
     });
-    if (!res.ok) throw new Error("Failed to advance clock");
+    if (!res.ok) throw new Error("Failed to advance test clock");
     return res.json();
   },
 
   async resetClock() {
-    const res = await fetch(`${API_BASE}/dev/clock/reset`, { method: "POST" });
+    const res = await fetch(`${API_BASE}/dev/clock/reset`, {
+      method: "POST"
+    });
     if (!res.ok) throw new Error("Failed to reset clock");
     return res.json();
   }

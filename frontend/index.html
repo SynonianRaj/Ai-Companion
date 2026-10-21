@@ -27,10 +27,11 @@
             <span id="persona-name">Aanya</span>
             <span class="badge-ai">AI</span>
           </h1>
-          <p id="persona-bio">UI/UX Designer • Indiranagar, Bengaluru</p>
+          <p id="persona-bio"><span id="persona-status-text">Online</span> • Indiranagar, Bengaluru</p>
         </div>
       </div>
       <div class="header-actions">
+        <button id="skip-wait-btn" class="btn-skip-wait" style="display: none;" title="Skip waiting for reply">⚡ Skip wait</button>
         <button id="dev-clock-btn" class="btn-icon" title="Test Clock (Time Travel)">⏱️</button>
         <button id="settings-btn" class="btn-icon" title="Settings & Memory">⚙️</button>
       </div>
@@ -58,6 +59,11 @@
           <div class="form-group">
             <label for="onboard-username">Your Name / Nickname</label>
             <input type="text" id="onboard-username" required placeholder="e.g. Rahul, Priya, Alex">
+          </div>
+
+          <div class="form-group">
+            <label for="onboard-city">Your City (Optional)</label>
+            <input type="text" id="onboard-city" placeholder="e.g. Kolkata, Delhi, Mumbai, Bengaluru">
           </div>
 
           <div class="checkbox-group">
@@ -95,6 +101,14 @@
           <select id="realism-intensity">
             <option value="realistic">Realistic (Deeper viewpoints, realistic tension)</option>
             <option value="mild">Mild (Playful banter, quick warm resolution)</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label for="pacing-mode-select">Conversational Pacing</label>
+          <select id="pacing-mode-select">
+            <option value="realistic">Realistic Human Pacing (Delays match simulated routine)</option>
+            <option value="turbo">Turbo Demo Mode (Instant replies for testing)</option>
           </select>
         </div>
 
