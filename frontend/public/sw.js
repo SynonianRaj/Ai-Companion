@@ -1,4 +1,4 @@
-const CACHE_NAME = "aanya-companion-v8-shell";
+const CACHE_NAME = "aanya-companion-v9-shell";
 const ASSETS_TO_CACHE = [
   "/",
   "/index.html",
@@ -30,32 +30,32 @@ self.addEventListener("activate", (event) => {
   self.clients.claim();
 });
 
+// Network-First with Cache Fallback: ensures latest JS/CSS changes are served immediately
 self.addEventListener("fetch", (event) => {
-  // Only cache GET requests and do not cache API calls
+  // Do not intercept non-GET or API endpoints
   if (event.request.method !== "GET" || event.request.url.includes("/api/")) {
     return;
   }
 
   event.respondWith(
-    caches.match(event.request).then((cachedResponse) => {
-      if (cachedResponse) {
-        return cachedResponse;
-      }
-      return fetch(event.request).then((networkResponse) => {
-        if (!networkResponse || networkResponse.status !== 200 || networkResponse.type !== "basic") {
-          return networkResponse;
+    fetch(event.request)
+      .then((networkResponse) => {
+        if (networkResponse && networkResponse.status === 200 && networkResponse.type === "basic") {
+          const responseToCache = networkResponse.clone();
+          caches.open(CACHE_NAME).then((cache) => {
+            cache.put(event.request, responseToCache);
+          });
         }
-        const responseToCache = networkResponse.clone();
-        caches.open(CACHE_NAME).then((cache) => {
-          cache.put(event.request, responseToCache);
-        });
         return networkResponse;
-      }).catch(() => {
-        // Fallback for navigation requests
-        if (event.request.mode === "navigate") {
-          return caches.match("/index.html");
-        }
-      });
-    })
+      })
+      .catch(() => {
+        // Fallback to cache when offline
+        return caches.match(event.request).then((cachedResponse) => {
+          if (cachedResponse) return cachedResponse;
+          if (event.request.mode === "navigate") {
+            return caches.match("/index.html");
+          }
+        });
+      })
   );
 });

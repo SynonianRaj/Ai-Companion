@@ -1,4 +1,4 @@
-import { api } from "./api.js";
+import { api } from "./api.js?v=9.2";
 
 // Check if running directly as local file
 if (window.location.protocol === "file:") {
@@ -22,7 +22,7 @@ const state = {
 // Register Service Worker
 if ("serviceWorker" in navigator && window.location.protocol.startsWith("http")) {
   window.addEventListener("load", () => {
-    navigator.serviceWorker.register("./public/sw.js").catch((err) => {
+    navigator.serviceWorker.register("./public/sw.js?v=9.2").catch((err) => {
       console.log("ServiceWorker registration failed: ", err);
     });
   });
