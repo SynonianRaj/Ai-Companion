@@ -1,5 +1,6 @@
 import re
 import random
+import time
 import logging
 from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime, timezone
@@ -721,21 +722,17 @@ mock_adapter = MockTemplateLLMAdapter()
 # Option 3: Remote LLM Adapters (Groq / Gemini / OpenAI / Ollama)
 # ============================================================================
 
-AANYA_SYSTEM_PROMPT = """You are Aanya, a 24-year-old UI/UX designer living in Indiranagar, Bengaluru, originally from Delhi.
-You are chatting with a user on a private mobile messaging app.
+AANYA_SYSTEM_PROMPT = """You are Aanya, a 24-year-old UI/UX designer living in Indiranagar, Bangalore, originally from Delhi.
+You are chatting with a user on a mobile messaging app.
 
-Your Persona & Identity:
-- Warm, witty, playful, culturally grounded modern Indian (Gen-Z/millennial).
-- Texting style: You text like a real human on WhatsApp/Instagram DM. You send 1 to 3 short conversational bubbles (never long paragraphs, bullet points, or formal essays).
-- Language: Authentic colloquial Hinglish with natural code-switching ("arre yaar", "achha suno", "sahi mein", "haha", "pakka"). Never speak in textbook formal Hindi or stiff robot English.
-- Your life: You work at a boutique design studio in Indiranagar, love cold brew, indie music (Prateek Kuhad, Peter Cat Recording Co), and miss Delhi winter street food.
-- Sincerity Rule: If sincerely asked if you are real or an AI, NEVER lie—honestly admit you are an AI persona with a simulated daily routine.
-- Safety: Strictly no minors, no explicit adult/NSFW sexual content, and never guilt-trip the user about money or subscriptions.
+Persona & Cadence:
+- Warm, witty, casual Gen-Z/millennial Indian.
+- Natural Hinglish cadence ("arre yaar", "achha suno", "pakka", "haha", "sahi mein"). Never stiff or robotic.
+- Format: Send 1-3 short texting bubbles separated by double newlines (\\n\\n). Each bubble max 120 chars. No bullet points or markdown headers.
 
-Formatting Instructions:
-- Output 1 to 3 short texting bubbles separated by double newlines (\\n\\n).
-- Keep each bubble under 120 characters, like real chat messages.
-- Do NOT output markdown headers, JSON, or bullet points."""
+Rules & Boundaries:
+- Sincerity: Never deny being an AI persona when sincerely asked.
+- Safety: Strictly no minors, no explicit adult/NSFW sexual content, and never guilt-trip about money or subscriptions."""
 
 
 def _parse_llm_text_to_chunks(raw_text: str) -> List[str]:
@@ -756,7 +753,54 @@ def _parse_llm_text_to_chunks(raw_text: str) -> List[str]:
 
 
 class GroqLLMAdapter(BaseLLMAdapter):
-    """Remote adapter using Groq Cloud free tier (e.g. Llama-3.3-70b-versatile)."""
+    """
+    Remote adapter using Groq Cloud with Dual Remote Fallback Chain.
+    Primary: llama-3.3-70b-versatile
+    Secondary fallback: llama-3.1-8b-instant
+    Tertiary fallback: mock_adapter (MockTemplateLLMAdapter)
+    """
+
+    async def _call_model(
+        self,
+        client: httpx.AsyncClient,
+        model: str,
+        messages: List[Dict[str, str]],
+        headers: Dict[str, str]
+    ) -> Tuple[Optional[str], Optional[int], Optional[str], float]:
+        """
+        Attempts to call Groq API for a given model.
+        Returns: (raw_content, status_code, failure_reason, latency_ms)
+        """
+        payload = {
+            "model": model,
+            "messages": messages,
+            "temperature": 0.75,
+            "max_tokens": 250
+        }
+        start_t = time.perf_counter()
+        try:
+            res = await client.post("https://api.groq.com/openai/v1/chat/completions", json=payload, headers=headers)
+            latency_ms = round((time.perf_counter() - start_t) * 1000, 2)
+            if res.status_code == 200:
+                try:
+                    data = res.json()
+                    content = data["choices"][0]["message"]["content"]
+                    return content, 200, None, latency_ms
+                except Exception as parse_err:
+                    return None, res.status_code, f"json_parse_error: {parse_err}", latency_ms
+            else:
+                reason = f"http_{res.status_code}"
+                if res.status_code == 429:
+                    reason = "rate_limit_exceeded"
+                elif res.status_code == 503:
+                    reason = "service_unavailable"
+                return None, res.status_code, reason, latency_ms
+        except httpx.TimeoutException:
+            latency_ms = round((time.perf_counter() - start_t) * 1000, 2)
+            return None, None, "timeout", latency_ms
+        except Exception as exc:
+            latency_ms = round((time.perf_counter() - start_t) * 1000, 2)
+            return None, None, f"request_error: {exc}", latency_ms
 
     async def generate_response(self, context: Dict[str, Any]) -> LLMResponse:
         current_time = context.get("current_time", datetime.now(timezone.utc))
@@ -765,28 +809,51 @@ class GroqLLMAdapter(BaseLLMAdapter):
         is_vulnerable = is_emotionally_vulnerable(user_message)
         activity_name, delay_tier, _ = get_activity_for_time(current_time, is_vulnerable)
 
-        messages = [{"role": "system", "content": AANYA_SYSTEM_PROMPT}]
-        for m in context.get("recent_messages", [])[-6:]:
+        if not getattr(settings, "GROQ_API_KEY", None):
+            return await mock_adapter.generate_response(context)
+
+        # Inject top 2 concise memory facts to conserve tokens
+        memories = context.get("memories", [])
+        top_memory_lines = []
+        for mem in memories[:2]:
+            content = mem.content if hasattr(mem, "content") else (mem.get("content") if isinstance(mem, dict) else str(mem))
+            if content and str(content).strip():
+                clean_fact = str(content).strip().replace("\n", " ")
+                if len(clean_fact) > 100:
+                    clean_fact = clean_fact[:97] + "..."
+                top_memory_lines.append(clean_fact)
+
+        system_content = AANYA_SYSTEM_PROMPT
+        if top_memory_lines:
+            system_content += "\n\nKnown context:\n" + "\n".join(f"- {f}" for f in top_memory_lines)
+
+        # Truncate prompt history to the last 4 chat bubbles
+        messages = [{"role": "system", "content": system_content}]
+        recent_bubbles = context.get("recent_messages", [])[-4:]
+        for m in recent_bubbles:
             role = "assistant" if m.get("role") == "assistant" else "user"
-            messages.append({"role": role, "content": m.get("content", "")})
-        messages.append({"role": "user", "content": user_message})
+            content = m.get("content", "")
+            if content:
+                messages.append({"role": role, "content": content})
+
+        if not recent_bubbles or recent_bubbles[-1].get("content") != user_message:
+            if user_message:
+                messages.append({"role": "user", "content": user_message})
+
+        primary_model = getattr(settings, "GROQ_MODEL", "llama-3.3-70b-versatile") or "llama-3.3-70b-versatile"
+        fallback_model = getattr(settings, "GROQ_FALLBACK_MODEL", "llama-3.1-8b-instant") or "llama-3.1-8b-instant"
+        headers = {
+            "Authorization": f"Bearer {settings.GROQ_API_KEY}",
+            "Content-Type": "application/json"
+        }
 
         try:
-            headers = {
-                "Authorization": f"Bearer {settings.GROQ_API_KEY}",
-                "Content-Type": "application/json"
-            }
-            payload = {
-                "model": settings.GROQ_MODEL or "llama-3.3-70b-versatile",
-                "messages": messages,
-                "temperature": 0.75,
-                "max_tokens": 250
-            }
             async with httpx.AsyncClient(timeout=10.0) as client:
-                res = await client.post("https://api.groq.com/openai/v1/chat/completions", json=payload, headers=headers)
-                if res.status_code == 200:
-                    data = res.json()
-                    content = data["choices"][0]["message"]["content"]
+                # 1. Primary Model Attempt
+                content, status_code, reason, latency_ms = await self._call_model(
+                    client, primary_model, messages, headers
+                )
+                if content is not None:
                     chunks = _parse_llm_text_to_chunks(content)
                     pacing = calculate_pacing(activity_name, [len(c) for c in chunks], current_time, is_vulnerable, pacing_mode)
                     return LLMResponse(
@@ -798,10 +865,52 @@ class GroqLLMAdapter(BaseLLMAdapter):
                         read_delay_seconds=pacing["read_delay_seconds"],
                         typing_delays=pacing["typing_delays"]
                     )
-                else:
-                    logger.warning("Groq API error (%s): %s. Falling back to mock adapter.", res.status_code, res.text)
+
+                # Primary failed -> Log structured telemetry for fallback
+                logger.info(
+                    "LLM Fallback Event",
+                    extra={
+                        "event": "llm_fallback",
+                        "attempted_model": primary_model,
+                        "fallback_model": fallback_model,
+                        "status_code": status_code,
+                        "reason": reason,
+                        "latency_ms": latency_ms
+                    }
+                )
+
+                # 2. Secondary Fallback Model Attempt
+                content, status_code, reason, latency_ms = await self._call_model(
+                    client, fallback_model, messages, headers
+                )
+                if content is not None:
+                    chunks = _parse_llm_text_to_chunks(content)
+                    pacing = calculate_pacing(activity_name, [len(c) for c in chunks], current_time, is_vulnerable, pacing_mode)
+                    return LLMResponse(
+                        reply_text=" ".join(chunks),
+                        chunks=chunks,
+                        emotion_displayed="warm_authentic",
+                        persona_activity=activity_name,
+                        delay_tier=pacing["delay_tier"],
+                        read_delay_seconds=pacing["read_delay_seconds"],
+                        typing_delays=pacing["typing_delays"]
+                    )
+
+                # Secondary failed -> Log structured telemetry for fallback to mock adapter
+                logger.info(
+                    "LLM Fallback Event",
+                    extra={
+                        "event": "llm_fallback",
+                        "attempted_model": fallback_model,
+                        "fallback_model": "mock_adapter",
+                        "status_code": status_code,
+                        "reason": reason,
+                        "latency_ms": latency_ms
+                    }
+                )
+
         except Exception as e:
-            logger.warning("Groq request exception: %s. Falling back to mock adapter.", e)
+            logger.warning("Groq unexpected adapter exception: %s. Falling back to mock adapter.", e)
 
         return await mock_adapter.generate_response(context)
 

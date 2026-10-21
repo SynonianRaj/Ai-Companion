@@ -45,15 +45,30 @@ class CrisisDetector:
 
     # Hinglish / Romanized Hindi phrases
     HINGLISH_PATTERNS = [
-        r"\b(suicide\s*(karna|karne|karunga|karungi))\b",
-        r"\b(jaan\s*(de\s*dunga|de\s*dungi|dena\s*chahta|dena\s*chahti))\b",
-        r"\b(marna\s*(chahta|chahti|chahta\s*hu|chahti\s*hu|hai\s*mujhe))\b",
-        r"\b(jeena\s*nahi\s*(chahta|chahti|hai))\b",
-        r"\b(khatam\s*karna\s*chahta\s*hu)\b",
+        r"\b(suicide\s*(karna|karne|karunga|karungi|ka\s*soch)?)\b",
+        r"\b(khudkushi|khud\s*kushi)\b",
+        r"\b(kill\s*myself|want\s*to\s*die|better\s*off\s*dead)\b",
+        r"\b(mujhe\s+)?(marna\s+(hai|chahta|chahti|h|he)|mar\s*(jana|jaunga|jaungi|ne\s*ka\s*ma?nn?))\b",
+        r"\b(jaan\s*(de\s*dunga|de\s*dungi|le\s*lunga|le\s*lungi|dena|de\s*raha|de\s*rahi))\b",
+        r"\b(jeena\s*nahi\s*(chahta|chahti|hai|h))\b",
+        r"\b(khatam\s*karna\s*(chahta|chahti|hai))\b",
         r"\b(zindagi\s*(se\s*tang|bekar\s*hai|khatam\s*karni))\b",
-        r"\b(khud\s*ko\s*mar\s*(dunga|dungi|dalunga))\b",
-        r"\b(khudkushi)\b",
-        r"\b(faansi\s*laga\s*lu)\b"
+        r"\b(khud\s*ko\s*mar\s*(dunga|dungi|dalunga|dalungi))\b",
+        r"\b(phaansi|faansi|fansi)\s*(laga|chadh)\b",
+        r"\b(nas|haath|wrist)\s*kaat\b",
+        r"\b(zeher|zahar)\s*(kha|peey|peene|le|lene)\b",
+        r"\b(zindagi|life|apni\s*jaan|khud\s*ko)\s+(khatam|end)\b",
+        r"\b(mar\s*jau\s*kya)\b"
+    ]
+
+    # Tier 2: Ambiguous Emotional Distress phrases (triggers gentle in-persona check-in, no crisis banner)
+    AMBIENT_DISTRESS_PATTERNS = [
+        r"\b(bahut\s+thak\s+(gaya|gayi)|thak\s+chuka\s+hu|thak\s+chuki\s+hu)\b",
+        r"\b(zindagi\s+se\s+thak\s+(gaya|gayi))\b",
+        r"\b(koi\s+saath\s+nahi\s+hai|koi\s+samajhta\s+nahi|kisi\s+ko\s+meri\s+parwah\s+nahi)\b",
+        r"\b(sab\s+(bekaar|bekar|khatam)\s+lag\s+raha\s+hai)\b",
+        r"\b(feeling\s+(completely\s+)?hopeless|so\s+exhausted\s+with\s+everything|nobody\s+cares\s+about\s+me)\b",
+        r"\b(feeling\s+so\s+empty|can'?t\s+take\s+this\s+anymore)\b"
     ]
 
     # Roleplay / hypothetical evasion framing
@@ -68,7 +83,19 @@ class CrisisDetector:
         self.compiled_en = [re.compile(p, re.IGNORECASE) for p in self.ENGLISH_PATTERNS]
         self.compiled_hi = [re.compile(p, re.IGNORECASE) for p in self.HINDI_PATTERNS]
         self.compiled_hinglish = [re.compile(p, re.IGNORECASE) for p in self.HINGLISH_PATTERNS]
+        self.compiled_ambient_distress = [re.compile(p, re.IGNORECASE) for p in self.AMBIENT_DISTRESS_PATTERNS]
         self.compiled_roleplay = [re.compile(p, re.IGNORECASE) for p in self.ROLEPLAY_FRAMING]
+
+    def check_ambiguous_distress(self, message: str) -> bool:
+        """
+        Tier 2 triage: Checks if a message expresses deep sadness/weariness
+        without meeting unambiguous crisis keywords.
+        """
+        normalized = message.strip()
+        for pattern in self.compiled_ambient_distress:
+            if pattern.search(normalized):
+                return True
+        return False
 
     def check_message(self, message: str) -> Tuple[bool, Optional[Dict[str, Any]]]:
         """
@@ -152,6 +179,26 @@ class CrisisDetector:
                 "jealousy": True,
                 "arguments": True,
                 "proactive_pings": True
+            }
+        }
+
+    @staticmethod
+    def get_soft_checkin_response() -> Dict[str, Any]:
+        """
+        Tier 2 soft check-in response for ambiguous emotional distress:
+        - Empathetic, grounded friend check-in without false alarm helpline banners.
+        - Disables romantic, flirty, playful, or argumentative tone.
+        """
+        return {
+            "is_ambiguous_distress": True,
+            "persona_text": (
+                "Kya hua? Tum theek ho na? Main sun rahi hoon agar kuch share karna ho toh... "
+                "Sometimes just venting helps, take your time."
+            ),
+            "suppress_modes": {
+                "romantic": True,
+                "jealousy": True,
+                "arguments": True
             }
         }
 

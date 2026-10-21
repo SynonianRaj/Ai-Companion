@@ -5,6 +5,7 @@ from sqlalchemy import select, and_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
 
+from backend.app.core.config import settings
 from backend.app.db.models import (
     User, RelationshipState, Conversation, Message, SafetyEvent
 )
@@ -235,6 +236,16 @@ class Orchestrator:
             if not is_crisis:
                 is_crisis, crisis_meta = crisis_detector.check_message(combined_text)
 
+            # Step 1b: Tier 2 Ambiguous Distress Detection (gentle soft check-in)
+            is_ambiguous_distress = False
+            if not is_crisis:
+                for chunk in raw_chunks:
+                    if crisis_detector.check_ambiguous_distress(chunk):
+                        is_ambiguous_distress = True
+                        break
+                if not is_ambiguous_distress:
+                    is_ambiguous_distress = crisis_detector.check_ambiguous_distress(combined_text)
+
             if is_crisis:
                 # STRICT COMPLIANCE: Log only metadata, NEVER user message text
                 safety_event = SafetyEvent(
@@ -386,11 +397,23 @@ class Orchestrator:
                 for m in reversed(recent_msgs_raw)
             ]
 
+            # Database-backed rate limiting check for remote LLM
+            from backend.app.services.rate_limiter_service import rate_limiter_service
+            is_allowed, rl_reason = await rate_limiter_service.check_and_increment(
+                session=session,
+                user_id=user.id,
+                max_per_minute=getattr(settings, "RATE_LIMIT_PER_MINUTE", 6),
+                max_per_day=getattr(settings, "RATE_LIMIT_PER_DAY", 40)
+            )
+
             context = {
                 "user_message": combined_text,
                 "relationship_stage": relationship.relationship_stage,
                 "lifecycle_status": relationship.lifecycle_status,
-                "emotional_range": relationship.emotional_range_setting or {"enabled": True, "intensity": "realistic"},
+                "emotional_range": {"enabled": False, "intensity": "suppressed"} if is_ambiguous_distress else (
+                    relationship.emotional_range_setting or {"enabled": True, "intensity": "realistic"}
+                ),
+                "is_ambiguous_distress": is_ambiguous_distress,
                 "memories": scoped_memories,
                 "recent_messages": recent_messages,
                 "is_ai_query": is_ai_query,
@@ -401,7 +424,12 @@ class Orchestrator:
                 "pacing_mode": pacing_mode
             }
 
-            active_adapter = LLMAdapterFactory.get_adapter()
+            if not is_allowed:
+                # DB rate limit exceeded -> seamlessly serve from offline mock engine
+                active_adapter = mock_adapter
+            else:
+                active_adapter = LLMAdapterFactory.get_adapter()
+
             response: LLMResponse = await active_adapter.generate_response(context)
 
             # If opening turn and user has no city, set awaiting_city_reply for next turn

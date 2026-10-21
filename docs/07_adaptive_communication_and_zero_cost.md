@@ -87,12 +87,22 @@ To ensure the prototype never outputs disconnected random templates in offline �
 2. **Pluggable Remote LLM Adapter (`LLMAdapterFactory`)**:
    - Configurable via `.env`:
      - `LLM_PROVIDER=mock` (default offline ₹0 mode)
-     - `LLM_PROVIDER=groq` (`GROQ_API_KEY`, `GROQ_MODEL=llama-3.3-70b-versatile` — free cloud tier)
+     - `LLM_PROVIDER=groq` (`GROQ_API_KEY`, `GROQ_MODEL=llama-3.3-70b-versatile`, `GROQ_FALLBACK_MODEL=llama-3.1-8b-instant` — free cloud tier)
      - `LLM_PROVIDER=gemini` (`GEMINI_API_KEY`, `GEMINI_MODEL=gemini-1.5-flash` — free cloud tier)
      - `LLM_PROVIDER=openai` or `ollama` (`OPENAI_API_KEY`, `OPENAI_API_BASE=http://localhost:11434/v1`)
    - Uses zero-dependency async HTTP calls via `httpx`.
-   - **Resilient Fallback**: If remote LLM returns an error, rate limit (429), or network timeout, it automatically and silently falls back to the intelligent contextual engine.
+   - **Token Limits vs. Daily Request Labels**:
+     - Groq free tier imposes strict token boundaries that bind long before daily request numbers:
+       - `llama-3.3-70b-versatile`: 12,000 TPM (tokens/min), 1,000 RPD, and 100,000 TPD (tokens/day). At ~600 tokens/turn, 70B exhausts after ~166 requests/day across all users.
+       - `llama-3.1-8b-instant`: 6,000 TPM, 14,400 RPD, and 500,000 TPD (~800 requests/day).
+     - **Dual Remote Fallback Chain**: Primary 70B -> on 429 (rate/token limit) or timeout fails over to 8B -> on 429 fails over to the **Intelligent Offline Contextual Mock Engine**.
+     - **Structured Telemetry**: Every fallback emits a structured log (`event="llm_fallback"`, `attempted_model`, `fallback_model`, `status_code`, `reason`, `latency_ms`).
+   - **Verified Groq Data Protection Terms**:
+     - **Zero Model Training**: Explicitly prohibited from using customer prompts or completions to train AI models under Groq's Services Agreement.
+     - **Default Non-Retention**: Standard inference requests are not retained.
+     - **Temporary Operational Logs**: Kept for up to 30 days strictly for debugging system outages and abuse/rate-limit monitoring.
    - **Safety Invariant**: Plain-code crisis screening always executes with 0ms delay *before* any model/adapter invocation.
+   - **Postgres-Backed Rate Limiting**: Usage counters (`user_rate_limits`) survive Render dyno spin-downs, capping users at 6 req/min and 40 LLM req/day before transparently serving from the mock engine.
 
 ## Recommended order
 

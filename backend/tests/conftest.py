@@ -2,6 +2,7 @@ import os
 import pytest
 import pytest_asyncio
 from httpx import AsyncClient, ASGITransport
+from sqlalchemy.pool import NullPool
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 
 # Use a test SQLite database
@@ -10,18 +11,23 @@ os.environ["DATABASE_URL"] = TEST_DB_URL
 
 from backend.app.core.config import settings
 settings.DATABASE_URL = TEST_DB_URL
+settings.LLM_PROVIDER = "mock"
 
 from backend.app.db.base import Base
-from backend.app.db.session import get_db, init_db, engine
+import backend.app.db.models
+import backend.app.db.session as session_module
+from backend.app.db.session import get_db, init_db
 from backend.app.services.clock_service import ClockService
 from backend.app.main import app
 
-test_engine = create_async_engine(TEST_DB_URL, echo=False)
+test_engine = create_async_engine(TEST_DB_URL, echo=False, poolclass=NullPool)
 test_session_factory = async_sessionmaker(
     bind=test_engine,
     class_=AsyncSession,
     expire_on_commit=False
 )
+session_module.engine = test_engine
+session_module.async_session_factory = test_session_factory
 
 
 async def override_get_db():
@@ -39,8 +45,11 @@ app.dependency_overrides[get_db] = override_get_db
 async def setup_test_db():
     ClockService.reset()
     async with test_engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
+        await conn.exec_driver_sql("PRAGMA foreign_keys = OFF")
+        for table in reversed(Base.metadata.sorted_tables):
+            await conn.exec_driver_sql(f"DELETE FROM {table.name}")
+        await conn.exec_driver_sql("PRAGMA foreign_keys = ON")
 
     # Initialize seed data
     from backend.app.db.models import Persona, PersonaState
@@ -71,8 +80,6 @@ async def setup_test_db():
     yield
 
     ClockService.reset()
-    async with test_engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
 
 
 @pytest_asyncio.fixture

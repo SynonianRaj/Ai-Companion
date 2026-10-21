@@ -1,5 +1,6 @@
 from typing import AsyncGenerator, Optional
 from datetime import datetime, timezone
+from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 from backend.app.core.config import settings
@@ -16,11 +17,42 @@ def to_utc(dt: Optional[datetime]) -> Optional[datetime]:
     return dt.astimezone(timezone.utc)
 
 
-# Create async engine
+def prepare_async_db_url_and_args(raw_url: str):
+    """Normalizes database URLs and configures connect_args for async SQLAlchemy / asyncpg / Neon."""
+    connect_args = {}
+    url = raw_url
+    if url.startswith("postgres://"):
+        url = url.replace("postgres://", "postgresql+asyncpg://", 1)
+    elif url.startswith("postgresql://") and not url.startswith("postgresql+"):
+        url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
+    
+    if "asyncpg" in url:
+        connect_args["statement_cache_size"] = 0
+        connect_args["prepared_statement_cache_size"] = 0
+        parsed = urlparse(url)
+        query_params = parse_qs(parsed.query)
+        if "sslmode" in query_params:
+            sslmode_val = query_params.pop("sslmode")[0]
+            if sslmode_val in ("require", "verify-ca", "verify-full", "prefer"):
+                connect_args["ssl"] = sslmode_val
+            new_query = urlencode(query_params, doseq=True)
+            url = urlunparse(parsed._replace(query=new_query))
+            
+    return url, connect_args
+
+
+# Create async engine with Neon / PgBouncer statement cache bypass for asyncpg
+db_url, db_connect_args = prepare_async_db_url_and_args(settings.DATABASE_URL)
+engine_args = {
+    "echo": False,
+    "future": True,
+}
+if db_connect_args:
+    engine_args["connect_args"] = db_connect_args
+
 engine = create_async_engine(
-    settings.DATABASE_URL,
-    echo=False,
-    future=True
+    db_url,
+    **engine_args
 )
 
 async_session_factory = async_sessionmaker(
@@ -67,6 +99,16 @@ async def init_db() -> None:
                 await conn.exec_driver_sql("ALTER TABLE messages ADD COLUMN sequence_order INTEGER DEFAULT 0")
             if "client_msg_id" not in msg_cols:
                 await conn.exec_driver_sql("ALTER TABLE messages ADD COLUMN client_msg_id VARCHAR(64)")
+
+            # Check relationship_state table columns
+            res_r = await conn.exec_driver_sql("PRAGMA table_info(relationship_state)")
+            rel_cols = {row[1] for row in res_r.fetchall()}
+            if "next_spontaneous_at" not in rel_cols:
+                await conn.exec_driver_sql("ALTER TABLE relationship_state ADD COLUMN next_spontaneous_at DATETIME")
+            if "last_spontaneous_at" not in rel_cols:
+                await conn.exec_driver_sql("ALTER TABLE relationship_state ADD COLUMN last_spontaneous_at DATETIME")
+            if "spontaneous_opt_in" not in rel_cols:
+                await conn.exec_driver_sql("ALTER TABLE relationship_state ADD COLUMN spontaneous_opt_in BOOLEAN DEFAULT 1")
         else:
             # PostgreSQL
             await conn.exec_driver_sql("ALTER TABLE users ADD COLUMN IF NOT EXISTS city VARCHAR(100);")
@@ -75,6 +117,9 @@ async def init_db() -> None:
             await conn.exec_driver_sql("ALTER TABLE messages ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'active';")
             await conn.exec_driver_sql("ALTER TABLE messages ADD COLUMN IF NOT EXISTS sequence_order INTEGER DEFAULT 0;")
             await conn.exec_driver_sql("ALTER TABLE messages ADD COLUMN IF NOT EXISTS client_msg_id VARCHAR(64);")
+            await conn.exec_driver_sql("ALTER TABLE relationship_state ADD COLUMN IF NOT EXISTS next_spontaneous_at TIMESTAMP WITH TIME ZONE;")
+            await conn.exec_driver_sql("ALTER TABLE relationship_state ADD COLUMN IF NOT EXISTS last_spontaneous_at TIMESTAMP WITH TIME ZONE;")
+            await conn.exec_driver_sql("ALTER TABLE relationship_state ADD COLUMN IF NOT EXISTS spontaneous_opt_in BOOLEAN DEFAULT TRUE;")
 
         # Backfill deliver_at, seen_at, status, sequence_order for any legacy rows
         await conn.exec_driver_sql("UPDATE messages SET deliver_at = created_at WHERE deliver_at IS NULL")

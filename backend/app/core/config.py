@@ -26,11 +26,26 @@ class Settings(BaseSettings):
     LLM_PROVIDER: str = "mock"  # "mock", "groq", "gemini", "openai"
     GROQ_API_KEY: Union[str, None] = None
     GROQ_MODEL: str = "llama-3.3-70b-versatile"
+    GROQ_FALLBACK_MODEL: str = "llama-3.1-8b-instant"
     GEMINI_API_KEY: Union[str, None] = None
     GEMINI_MODEL: str = "gemini-1.5-flash"
     OPENAI_API_KEY: Union[str, None] = None
     OPENAI_API_BASE: Union[str, None] = None
     OPENAI_MODEL: str = "gpt-4o-mini"
+
+    # Rate Limiting (survives dyno spin-downs via DB)
+    RATE_LIMIT_PER_MINUTE: int = 6
+    RATE_LIMIT_PER_DAY: int = 40
+
+    # Cron & Background Scheduler
+    CRON_SECRET: str = "pilot-cron-secret-2026"
+    TICK_BATCH_SIZE: int = 5
+    TRIAL_DURATION_DAYS: int = 14
+
+    # Web Push (VAPID)
+    VAPID_PUBLIC_KEY: Union[str, None] = None
+    VAPID_PRIVATE_KEY: Union[str, None] = None
+    VAPID_CLAIM_EMAIL: str = "admin@ai-companion.local"
 
     model_config = SettingsConfigDict(
         env_file=".env",

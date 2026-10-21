@@ -108,3 +108,18 @@ class RelationshipSettingsUpdateRequest(BaseModel):
 
 class DevClockAdvanceRequest(BaseModel):
     days: float
+
+
+class PushSubscribeRequest(BaseModel):
+    relationship_id: str
+    endpoint: str
+    p256dh: str
+    auth: str
+
+
+class TickResponse(BaseModel):
+    status: str
+    claimed_count: int
+    rescheduled_quiet_hours: int
+    timestamp: datetime
+

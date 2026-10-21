@@ -81,6 +81,9 @@ class RelationshipState(Base):
     )
     boundaries: Mapped[Dict[str, Any]] = mapped_column(JSON, default=dict)
     last_user_initiated_interaction_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    next_spontaneous_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_spontaneous_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    spontaneous_opt_in: Mapped[bool] = mapped_column(Boolean, default=True)
     expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     lifecycle_status: Mapped[str] = mapped_column(String(50), default="active")  # active, dormant, expired, deleted
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
@@ -197,3 +200,27 @@ class SubscriptionEntitlement(Base):
     ended_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
     user: Mapped["User"] = sa_relationship("User", back_populates="entitlements")
+
+
+class UserRateLimit(Base):
+    __tablename__ = "user_rate_limits"
+
+    user_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    window_minute: Mapped[int] = mapped_column(Integer, default=0)
+    minute_count: Mapped[int] = mapped_column(Integer, default=0)
+    day_date: Mapped[str] = mapped_column(String(10), default="")  # YYYY-MM-DD
+    day_count: Mapped[int] = mapped_column(Integer, default=0)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class PushSubscription(Base):
+    __tablename__ = "push_subscriptions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), index=True)
+    relationship_id: Mapped[str] = mapped_column(String(36), ForeignKey("relationship_state.id"), index=True)
+    endpoint: Mapped[str] = mapped_column(Text)
+    p256dh: Mapped[str] = mapped_column(String(255))
+    auth: Mapped[str] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+

@@ -1,0 +1,32 @@
+# Render Blueprint Specification for AI Companion (Free Tier)
+# Docs: https://render.com/docs/blueprint-spec
+
+services:
+  - type: web
+    name: ai-companion
+    runtime: python
+    plan: free
+    region: singapore
+    buildCommand: pip install -r backend/requirements.txt
+    startCommand: uvicorn backend.app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: DEBUG
+        value: "false"
+      - key: DATABASE_URL
+        sync: false  # Supply your Neon/Supabase/Render PostgreSQL URL (e.g. postgresql://user:pass@ep-xyz.neon.tech/neondb?sslmode=require)
+      - key: SECRET_KEY
+        generateValue: true  # Render generates a secure random 256-bit token automatically
+      - key: CRON_SECRET
+        value: pilot-cron-secret-2026
+      - key: LLM_PROVIDER
+        value: groq
+      - key: GROQ_API_KEY
+        sync: false  # Supply your free Groq Cloud API key from console.groq.com
+      - key: GROQ_MODEL
+        value: llama-3.3-70b-versatile
+      - key: GROQ_FALLBACK_MODEL
+        value: llama-3.1-8b-instant

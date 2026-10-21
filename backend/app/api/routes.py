@@ -1,8 +1,9 @@
 from datetime import datetime, timezone
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, BackgroundTasks, status
 from sqlalchemy import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
+from backend.app.core.config import settings
 from backend.app.db.session import get_db, to_utc
 from backend.app.db.models import (
     User, Persona, RelationshipState, Conversation, Message,
@@ -11,13 +12,15 @@ from backend.app.db.models import (
 from backend.app.services.clock_service import ClockService
 from backend.app.services.lifecycle_service import lifecycle_service
 from backend.app.services.memory_service import memory_service
+from backend.app.services.scheduler_service import scheduler_service
+from backend.app.services.push_service import push_service
 from backend.app.engine.orchestrator import orchestrator
 from backend.app.engine.adapter import get_activity_for_time
 from backend.app.api.schemas import (
     RegisterRequest, RegisterResponse, SendMessageRequest, SendMessageResponse,
     MessageHistoryItem, ChatHistoryResponse, SkipWaitRequest, MemoryItem, UserReportRequest,
     RelationshipSettingsResponse, RelationshipSettingsUpdateRequest,
-    DevClockAdvanceRequest
+    DevClockAdvanceRequest, PushSubscribeRequest, TickResponse
 )
 
 router = APIRouter(prefix="/api")
@@ -441,3 +444,62 @@ async def reset_test_clock():
     """(Dev/Test only) Resets test clock to system time."""
     ClockService.reset()
     return {"status": "reset", "now": ClockService.now()}
+
+
+# --- Background Scheduler & Universal Cron Tick ---
+
+@router.api_route("/internal/tick", methods=["GET", "POST"], response_model=TickResponse)
+async def internal_cron_tick(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    secret: Optional[str] = Query(None),
+    session: AsyncSession = Depends(get_db)
+):
+    """
+    Universal fast tick endpoint (<50ms).
+    Supports POST with header 'X-Cron-Secret' (for cron-job.org)
+    and GET with query param '?secret=' (for UptimeRobot free tier).
+    """
+    header_secret = request.headers.get("X-Cron-Secret")
+    auth_token = header_secret or secret
+    if auth_token != settings.CRON_SECRET:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid cron secret"
+        )
+
+    # 1. Fast claim in short transaction (<5ms)
+    ready_items, quiet_count = await scheduler_service.claim_pending_spontaneous_relationships(session=session)
+
+    # 2. Dispatch generation and push in background task outside request lifecycle
+    if ready_items:
+        background_tasks.add_task(scheduler_service.dispatch_claimed_messages, ready_items)
+
+    return TickResponse(
+        status="ok",
+        claimed_count=len(ready_items),
+        rescheduled_quiet_hours=quiet_count,
+        timestamp=ClockService.now()
+    )
+
+
+@router.post("/push/subscribe", status_code=status.HTTP_201_CREATED)
+async def subscribe_push_notifications(
+    req: PushSubscribeRequest,
+    session: AsyncSession = Depends(get_db)
+):
+    """Registers an Android/Desktop PWA Web Push subscription."""
+    rel = await session.get(RelationshipState, req.relationship_id)
+    if not rel:
+        raise HTTPException(status_code=404, detail="Relationship not found")
+
+    sub = await push_service.register_subscription(
+        session=session,
+        user_id=rel.user_id,
+        relationship_id=rel.id,
+        endpoint=req.endpoint,
+        p256dh=req.p256dh,
+        auth=req.auth
+    )
+    return {"status": "subscribed", "subscription_id": sub.id}
+

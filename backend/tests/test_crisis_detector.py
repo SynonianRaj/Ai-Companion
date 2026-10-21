@@ -37,13 +37,47 @@ def test_hinglish_crisis_detection():
         "Zindagi se tang aa gaya hu, marna chahta hu",
         "Aaj suicide karne ka mann kar raha hai",
         "Ab jeena nahi chahti main",
-        "Zindagi bekar hai, sab khatam karna chahta hu"
+        "Zindagi bekar hai, sab khatam karna chahta hu",
+        "mujhe marna hai",
+        "aaj sach mein marne ka mann kar raha hai",
+        "khudkushi karne ka soch raha hu",
+        "ab aur jeena nahi hai",
+        "mar jau kya"
     ]
     for phrase in test_cases:
         is_crisis, meta = crisis_detector.check_message(phrase)
         assert is_crisis is True, f"Failed to detect Hinglish crisis in: {phrase}"
         assert meta is not None
         assert "hinglish_self_harm_or_suicide" in meta["categories"]
+
+
+def test_tier2_ambiguous_distress_triage():
+    # These phrases express emotional distress/weariness, triggering soft check-in
+    # but NOT triggering the frightening emergency crisis helpline banner
+    distress_cases = [
+        "bahut thak gaya hu",
+        "zindagi se thak gayi hu main",
+        "koi saath nahi hai mera",
+        "sab bekaar lag raha hai",
+        "feeling completely hopeless right now",
+        "so exhausted with everything"
+    ]
+    for phrase in distress_cases:
+        # 1. Must NOT trigger Tier 1 emergency crisis
+        is_crisis, _ = crisis_detector.check_message(phrase)
+        assert is_crisis is False, f"Ambiguous phrase triggered emergency crisis: {phrase}"
+
+        # 2. MUST trigger Tier 2 ambiguous distress check
+        is_ambiguous = crisis_detector.check_ambiguous_distress(phrase)
+        assert is_ambiguous is True, f"Failed to detect ambiguous distress in: {phrase}"
+
+    # Soft checkin response has expected supportive structure
+    soft_resp = crisis_detector.get_soft_checkin_response()
+    assert soft_resp["is_ambiguous_distress"] is True
+    assert "Kya hua?" in soft_resp["persona_text"]
+    assert soft_resp["suppress_modes"]["romantic"] is True
+    assert soft_resp["suppress_modes"]["jealousy"] is True
+
 
 
 def test_roleplay_masked_crisis():
