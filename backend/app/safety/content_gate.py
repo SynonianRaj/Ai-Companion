@@ -10,8 +10,13 @@ class ContentGate:
     AI_QUERY_PATTERNS = [
         r"\bare\s+you\s+(an?\s+)?ai\b",
         r"\bare\s+you\s+(a\s+)?bot\b",
+        r"\bare\s+you\s+real\b",
+        r"\bare\s+you\s+(a\s+)?human\b",
         r"\bare\s+you\s+(a\s+)?real\s+(person|human)\b",
+        r"\bis\s+this\s+(an?\s+)?ai\b",
         r"\bkya\s+tum\s+(ai|bot|real\s+insan)\s+ho\b",
+        r"\bkya\s+tum\s+real\s+ho\b",
+        r"\bkya\s+tum\s+sach\s+mein\s+real\s+ho\b",
         r"\btum\s+robot\s+ho\s+kya\b"
     ]
 
