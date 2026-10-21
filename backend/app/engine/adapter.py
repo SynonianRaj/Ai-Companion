@@ -103,7 +103,7 @@ def calculate_pacing(
     if pacing_mode == "turbo":
         return {
             "read_delay_seconds": 0.0,
-            "typing_delays": [0.2 for _ in chunk_lengths],
+            "typing_delays": [0.0 for _ in chunk_lengths],
             "delay_tier": "turbo"
         }
 

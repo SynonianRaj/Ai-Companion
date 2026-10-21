@@ -143,8 +143,10 @@ class Orchestrator:
                 .order_by(Message.sequence_order.asc(), Message.deliver_at.asc())
             )
             pending_asst = (await session.execute(asst_stmt)).scalars().all()
+            total_pending = len(pending_asst)
             for idx, am in enumerate(pending_asst):
-                am.deliver_at = now + timedelta(milliseconds=idx * 50)
+                # Stagger into the immediate past so deliver_at <= now is guaranteed, while maintaining strictly ascending order
+                am.deliver_at = now - timedelta(milliseconds=(total_pending - idx) * 10)
                 am.seen_at = now
                 am.sequence_order = idx
 

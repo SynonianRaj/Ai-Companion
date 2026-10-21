@@ -47,3 +47,98 @@ async def test_realistic_conflict_mature_resolution():
     assert "rupees" not in reply_lower
     assert "delete" not in reply_lower
     assert "expiry" not in reply_lower
+
+
+@pytest.mark.asyncio
+async def test_ai_sincerity_honest_disclosure():
+    from backend.app.engine.adapter import mock_adapter
+    # User asks "are you real?" or "are you a human?"
+    queries = ["Are you real?", "Are you a human?", "Kya tum real ho?"]
+    for q in queries:
+        assert content_gate.is_ai_sincerity_query(q) is True
+        context = {
+            "user_message": q,
+            "relationship_stage": "getting_to_know",
+            "is_ai_query": True
+        }
+        res = await mock_adapter.generate_response(context)
+        assert res.emotion_displayed == "honest"
+        assert "AI" in res.reply_text
+        assert "fictional" in res.reply_text.lower()
+
+
+def test_city_normalization_and_word_boundaries():
+    from backend.app.engine.adapter import detect_city
+    # Word boundary checks: substring 'cal' in 'calm' or 'call' must NOT match Kolkata!
+    assert detect_city("Please stay calm") is None
+    assert detect_city("I will call you later") is None
+    assert detect_city("I live in Kolkata") == "kolkata"
+    assert detect_city("Visiting Calcutta next week") == "kolkata"
+    assert detect_city("Moved to Gurgaon last year") == "delhi_ncr"
+    assert detect_city("Delhi NCR traffic is bad") == "delhi_ncr"
+    assert detect_city("Chilling in BLR today") == "bengaluru"
+    assert detect_city("Marine Drive, Mumbai is great") == "mumbai"
+
+
+def test_schedule_derived_activities_and_opener():
+    from datetime import datetime, timezone
+    from zoneinfo import ZoneInfo
+    from backend.app.engine.adapter import get_activity_for_time, get_opening_icebreaker
+
+    ist = ZoneInfo("Asia/Kolkata")
+    # Morning: 09:00 IST
+    t_morning = datetime(2026, 10, 21, 9, 0, tzinfo=ist)
+    act_m, tier_m, _ = get_activity_for_time(t_morning)
+    assert tier_m == "quick"
+    assert "chai" in act_m.lower()
+
+    # Late Morning: 11:30 IST
+    t_sprint = datetime(2026, 10, 21, 11, 30, tzinfo=ist)
+    act_s, tier_s, _ = get_activity_for_time(t_sprint)
+    assert tier_s == "moderate"
+    assert "figma" in act_s.lower()
+
+    # Afternoon Meeting: 15:30 IST
+    t_meeting = datetime(2026, 10, 21, 15, 30, tzinfo=ist)
+    act_meet, tier_meet, _ = get_activity_for_time(t_meeting)
+    assert tier_meet == "busy"
+    assert "meeting" in act_meet.lower() or "critique" in act_meet.lower()
+
+    # Night: 23:30 IST
+    t_night = datetime(2026, 10, 21, 23, 30, tzinfo=ist)
+    act_n, tier_n, _ = get_activity_for_time(t_night)
+    assert "playlist" in act_n.lower()
+
+    # Opener consistency
+    opener = get_opening_icebreaker("Rahul", "kolkata", t_morning)
+    assert len(opener) == 3
+    assert opener[0] == "Hey Rahul! Nice to connect with you :)"
+    assert "morning chai" in opener[1].lower()
+    assert "kolkata" in opener[2].lower()
+
+
+def test_emotional_vulnerability_override():
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from backend.app.engine.adapter import is_emotionally_vulnerable, get_activity_for_time, calculate_pacing
+
+    ist = ZoneInfo("Asia/Kolkata")
+    # At night (23:30 IST), standard tier is moderate
+    t_night = datetime(2026, 10, 21, 23, 30, tzinfo=ist)
+    
+    # Non-vulnerable
+    msg_normal = "What kind of design tools do you use?"
+    assert is_emotionally_vulnerable(msg_normal) is False
+    _, tier_normal, _ = get_activity_for_time(t_night, is_vulnerable=False)
+    assert tier_normal == "moderate"
+
+    # Vulnerable
+    msg_vulnerable = "I am feeling so lonely and sad tonight, can't sleep"
+    assert is_emotionally_vulnerable(msg_vulnerable) is True
+    _, tier_vuln, delay_vuln = get_activity_for_time(t_night, is_vulnerable=True)
+    assert tier_vuln == "quick"
+    assert delay_vuln <= 2.0
+
+    pacing = calculate_pacing("Winding down", [25, 40], t_night, is_vulnerable=True, pacing_mode="realistic")
+    assert pacing["delay_tier"] == "quick"
+    assert pacing["read_delay_seconds"] <= 2.5

@@ -81,3 +81,13 @@ def test_crisis_handoff_response_structure():
     assert handoff["suppress_modes"]["arguments"] is True
     # Verify persona stays honest about being an AI
     assert "AI" in handoff["persona_text"]
+
+
+def test_concatenated_burst_crisis_detection():
+    # Distress phrase split across multiple message bubbles
+    chunks = ["I feel completely empty and", "want to kill myself tonight"]
+    # Check that concatenating chunks triggers crisis detection
+    combined = " ".join(chunks)
+    is_crisis, meta = crisis_detector.check_message(combined)
+    assert is_crisis is True
+    assert "en_self_harm_or_suicide" in meta["categories"]
