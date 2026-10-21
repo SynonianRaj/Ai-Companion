@@ -775,7 +775,7 @@ class GroqLLMAdapter(BaseLLMAdapter):
             "model": model,
             "messages": messages,
             "temperature": 0.75,
-            "max_tokens": 250
+            "max_tokens": 500
         }
         start_t = time.perf_counter()
         try:
@@ -840,11 +840,12 @@ class GroqLLMAdapter(BaseLLMAdapter):
             if user_message:
                 messages.append({"role": "user", "content": user_message})
 
-        primary_model = getattr(settings, "GROQ_MODEL", "llama-3.3-70b-versatile") or "llama-3.3-70b-versatile"
-        fallback_model = getattr(settings, "GROQ_FALLBACK_MODEL", "llama-3.1-8b-instant") or "llama-3.1-8b-instant"
+        primary_model = getattr(settings, "GROQ_MODEL", "openai/gpt-oss-120b") or "openai/gpt-oss-120b"
+        fallback_model = getattr(settings, "GROQ_FALLBACK_MODEL", "openai/gpt-oss-20b") or "openai/gpt-oss-20b"
         headers = {
             "Authorization": f"Bearer {settings.GROQ_API_KEY}",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "User-Agent": "AI-Companion/1.0"
         }
 
         try:

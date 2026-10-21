@@ -25,8 +25,8 @@ class Settings(BaseSettings):
     # LLM Settings (Option 3: Hybrid Architecture)
     LLM_PROVIDER: str = "mock"  # "mock", "groq", "gemini", "openai"
     GROQ_API_KEY: Union[str, None] = None
-    GROQ_MODEL: str = "llama-3.3-70b-versatile"
-    GROQ_FALLBACK_MODEL: str = "llama-3.1-8b-instant"
+    GROQ_MODEL: str = "openai/gpt-oss-120b"
+    GROQ_FALLBACK_MODEL: str = "openai/gpt-oss-20b"
     GEMINI_API_KEY: Union[str, None] = None
     GEMINI_MODEL: str = "gemini-1.5-flash"
     OPENAI_API_KEY: Union[str, None] = None
