@@ -54,12 +54,31 @@ async function init() {
     console.error("Failed to load persona:", e);
   }
 
-  if (!state.user || !state.relationship) {
+  if (!state.user || !state.relationship || !state.relationship.id) {
     showOnboarding();
   } else {
-    loadChatHistory();
-    refreshRelationshipStatus();
+    try {
+      await refreshRelationshipStatus();
+      await loadChatHistory();
+    } catch (err) {
+      if (err.message && err.message.includes("Relationship not found")) {
+        resetSessionToOnboarding("Previous session expired or was reset. Please start a new conversation.");
+      }
+    }
   }
+}
+
+function resetSessionToOnboarding(noticeMessage = null) {
+  localStorage.removeItem("aanya_user");
+  localStorage.removeItem("aanya_rel");
+  state.user = null;
+  state.relationship = null;
+  chatFeed.innerHTML = "";
+  if (noticeMessage) {
+    const errorEl = document.getElementById("onboard-error");
+    if (errorEl) errorEl.textContent = noticeMessage;
+  }
+  showOnboarding();
 }
 
 function updatePersonaStatus(status, isTyping = false) {
@@ -162,6 +181,9 @@ async function loadChatHistory() {
     }
   } catch (err) {
     console.error("Failed to load history:", err);
+    if (err.message && err.message.includes("Relationship not found")) {
+      resetSessionToOnboarding("Previous session expired or was reset. Please start a new conversation.");
+    }
   }
 }
 
@@ -427,7 +449,11 @@ async function flushUserBurst() {
   } catch (err) {
     removeTypingIndicator();
     hideSkipWaitButton();
-    appendMessageElement("assistant", `[Notice: ${err.message}]`);
+    if (err.message && err.message.includes("Relationship not found")) {
+      resetSessionToOnboarding("Your previous session was reset or expired. Please re-enter your name to continue.");
+    } else {
+      appendMessageElement("assistant", `[Notice: ${err.message}]`);
+    }
   }
 }
 
@@ -484,7 +510,11 @@ async function refreshRelationshipStatus() {
       noticeBanner.style.display = "none";
     }
   } catch (e) {
-    console.warn("Could not fetch relationship status:", e);
+    if (e.message && e.message.includes("Relationship not found")) {
+      resetSessionToOnboarding("Previous session expired or was reset. Please start a new conversation.");
+    } else {
+      console.warn("Could not fetch relationship status:", e);
+    }
   }
 }
 

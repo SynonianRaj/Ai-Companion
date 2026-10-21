@@ -46,6 +46,10 @@ async def register_user(
     stmt = select(User).where(User.username == req.username)
     existing_user = (await session.execute(stmt)).scalar_one_or_none()
     if existing_user:
+        now = ClockService.now()
+        if req.city and req.city.strip():
+            existing_user.city = req.city.strip()
+
         # Fetch existing relationship
         rel_stmt = select(RelationshipState).where(
             and_(
@@ -54,10 +58,32 @@ async def register_user(
             )
         )
         rel = (await session.execute(rel_stmt)).scalar_one_or_none()
+        if not rel or rel.lifecycle_status == "deleted":
+            rel = RelationshipState(
+                user_id=existing_user.id,
+                persona_id="aanya_v1",
+                relationship_stage="encounter",
+                emotional_range_setting={"enabled": True, "intensity": "realistic"},
+                last_user_initiated_interaction_at=now,
+                lifecycle_status="active",
+                updated_at=now
+            )
+            session.add(rel)
+            await session.flush()
+            conv = Conversation(
+                relationship_id=rel.id,
+                user_id=existing_user.id,
+                persona_id="aanya_v1",
+                title="Chat with Aanya",
+                created_at=now
+            )
+            session.add(conv)
+            await session.commit()
+
         return RegisterResponse(
             user_id=existing_user.id,
             username=existing_user.username,
-            relationship_id=rel.id if rel else "",
+            relationship_id=rel.id,
             persona_id="aanya_v1",
             persona_name="Aanya",
             beta_entitled=True,
@@ -223,6 +249,10 @@ async def get_chat_history(
     relationship_id: str = Query(...),
     session: AsyncSession = Depends(get_db)
 ):
+    rel = await session.get(RelationshipState, relationship_id)
+    if not rel:
+        raise HTTPException(status_code=404, detail="Relationship not found")
+
     # Lazy commit delivered side effects
     await orchestrator.commit_delivered_side_effects(session, relationship_id)
 
