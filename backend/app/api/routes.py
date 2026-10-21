@@ -3,7 +3,7 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
-from backend.app.db.session import get_db
+from backend.app.db.session import get_db, to_utc
 from backend.app.db.models import (
     User, Persona, RelationshipState, Conversation, Message,
     SubscriptionEntitlement, UserReport
@@ -12,9 +12,10 @@ from backend.app.services.clock_service import ClockService
 from backend.app.services.lifecycle_service import lifecycle_service
 from backend.app.services.memory_service import memory_service
 from backend.app.engine.orchestrator import orchestrator
+from backend.app.engine.adapter import get_activity_for_time
 from backend.app.api.schemas import (
     RegisterRequest, RegisterResponse, SendMessageRequest, SendMessageResponse,
-    MessageHistoryItem, MemoryItem, UserReportRequest,
+    MessageHistoryItem, ChatHistoryResponse, SkipWaitRequest, MemoryItem, UserReportRequest,
     RelationshipSettingsResponse, RelationshipSettingsUpdateRequest,
     DevClockAdvanceRequest
 )
@@ -60,7 +61,8 @@ async def register_user(
             persona_id="aanya_v1",
             persona_name="Aanya",
             beta_entitled=True,
-            created_at=existing_user.created_at
+            created_at=existing_user.created_at,
+            city=existing_user.city
         )
 
     # Create new User
@@ -71,6 +73,7 @@ async def register_user(
         ai_disclosure_acknowledged=True,
         locale=req.locale,
         timezone=req.timezone,
+        city=req.city.strip() if req.city and req.city.strip() else None,
         created_at=now
     )
     session.add(user)
@@ -116,7 +119,8 @@ async def register_user(
         persona_id="aanya_v1",
         persona_name="Aanya",
         beta_entitled=True,
-        created_at=user.created_at
+        created_at=user.created_at,
+        city=user.city
     )
 
 
@@ -179,40 +183,103 @@ async def send_chat_message(
         user=user,
         relationship=rel,
         conversation=conv,
-        user_message=req.message
+        user_message=req.message,
+        user_messages=req.messages,
+        pacing_mode=req.pacing_mode or "realistic",
+        client_msg_id=req.client_msg_id
     )
 
     return SendMessageResponse(
         role=result["role"],
         content=result["content"],
+        chunks=result.get("chunks", [result["content"]]),
+        chunk_details=result.get("chunk_details", []),
         crisis_handoff=result.get("crisis_handoff"),
         relationship_stage=result.get("relationship_stage", rel.relationship_stage),
         lifecycle_status=result.get("lifecycle_status", rel.lifecycle_status),
-        emotion=result.get("emotion", "warm")
+        emotion=result.get("emotion", "warm"),
+        persona_activity=result.get("persona_activity"),
+        delay_tier=result.get("delay_tier", "quick"),
+        read_delay_seconds=result.get("read_delay_seconds", 0.0),
+        seen_at=result.get("seen_at")
     )
 
 
-@router.get("/chat/history", response_model=List[MessageHistoryItem])
+@router.post("/chat/skip-wait")
+async def skip_chat_wait(
+    req: SkipWaitRequest,
+    session: AsyncSession = Depends(get_db)
+):
+    """Fast-forward pending simulated delays to now (100% free action)."""
+    rel = await session.get(RelationshipState, req.relationship_id)
+    if not rel:
+        raise HTTPException(status_code=404, detail="Relationship not found")
+    updated = await orchestrator.skip_wait(session, req.relationship_id)
+    return {"status": "skipped", "updated_messages": updated}
+
+
+@router.get("/chat/history", response_model=ChatHistoryResponse)
 async def get_chat_history(
     relationship_id: str = Query(...),
     session: AsyncSession = Depends(get_db)
 ):
+    # Lazy commit delivered side effects
+    await orchestrator.commit_delivered_side_effects(session, relationship_id)
+
+    now = to_utc(ClockService.now())
+
+    # Query active delivered messages
     stmt = (
         select(Message)
-        .where(Message.relationship_id == relationship_id)
-        .order_by(Message.created_at.asc())
+        .where(
+            and_(
+                Message.relationship_id == relationship_id,
+                Message.status == "active",
+                Message.deliver_at <= now
+            )
+        )
+        .order_by(Message.deliver_at.asc(), Message.sequence_order.asc())
     )
     messages = (await session.execute(stmt)).scalars().all()
-    return [
-        MessageHistoryItem(
-            id=m.id,
-            role=m.role,
-            content=m.content,
-            created_at=m.created_at,
-            metadata=m.metadata_json or {}
+
+    # Check for pending future messages
+    pending_stmt = (
+        select(Message)
+        .where(
+            and_(
+                Message.relationship_id == relationship_id,
+                Message.status == "active",
+                Message.deliver_at > now
+            )
         )
-        for m in messages
-    ]
+        .order_by(Message.deliver_at.asc(), Message.sequence_order.asc())
+    )
+    pending_messages = (await session.execute(pending_stmt)).scalars().all()
+
+    next_deliver_at = pending_messages[0].deliver_at if pending_messages else None
+    pending_delivery = len(pending_messages) > 0
+
+    activity_name, _, _ = get_activity_for_time(now)
+
+    return ChatHistoryResponse(
+        messages=[
+            MessageHistoryItem(
+                id=m.id,
+                role=m.role,
+                content=m.content,
+                created_at=m.created_at,
+                deliver_at=m.deliver_at,
+                seen_at=m.seen_at,
+                status=m.status,
+                sequence_order=m.sequence_order,
+                metadata=m.metadata_json or {}
+            )
+            for m in messages
+        ],
+        pending_delivery=pending_delivery,
+        next_deliver_at=next_deliver_at,
+        persona_activity=activity_name
+    )
 
 
 @router.get("/memories", response_model=List[MemoryItem])
