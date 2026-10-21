@@ -25,6 +25,7 @@ class User(Base):
     ai_disclosure_acknowledged: Mapped[bool] = mapped_column(Boolean, default=False)
     locale: Mapped[str] = mapped_column(String(20), default="en_IN")
     timezone: Mapped[str] = mapped_column(String(50), default="Asia/Kolkata")
+    city: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     notification_preferences: Mapped[Dict[str, Any]] = mapped_column(JSON, default=dict)
     privacy_settings: Mapped[Dict[str, Any]] = mapped_column(JSON, default=dict)
     adult_content_opt_in: Mapped[bool] = mapped_column(Boolean, default=False)  # Explicit tier stays locked
@@ -114,6 +115,11 @@ class Message(Base):
     content: Mapped[Text] = mapped_column(Text)
     metadata_json: Mapped[Dict[str, Any]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    deliver_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    seen_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="active")  # 'active', 'cancelled'
+    sequence_order: Mapped[int] = mapped_column(Integer, default=0)
+    client_msg_id: Mapped[Optional[str]] = mapped_column(String(64), index=True, nullable=True)
 
     conversation: Mapped["Conversation"] = sa_relationship("Conversation", back_populates="messages")
 

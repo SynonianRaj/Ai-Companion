@@ -1,9 +1,19 @@
-from typing import AsyncGenerator
+from typing import AsyncGenerator, Optional
 from datetime import datetime, timezone
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 from backend.app.core.config import settings
 from backend.app.db.base import Base
 from backend.app.db.models import Persona, PersonaState
+
+
+def to_utc(dt: Optional[datetime]) -> Optional[datetime]:
+    """Ensure datetime is UTC timezone-aware for consistent comparisons."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
 
 
 # Create async engine
@@ -31,9 +41,46 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 
 
 async def init_db() -> None:
-    """Create tables if they don't exist and seed canonical Persona 1."""
+    """Create tables if they don't exist, safely run column migrations, and seed canonical Persona 1."""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
+        # Safe column migrations for existing databases (SQLite & PostgreSQL)
+        is_sqlite = engine.url.drivername.startswith("sqlite")
+        if is_sqlite:
+            # Check users table columns
+            res_u = await conn.exec_driver_sql("PRAGMA table_info(users)")
+            user_cols = {row[1] for row in res_u.fetchall()}
+            if "city" not in user_cols:
+                await conn.exec_driver_sql("ALTER TABLE users ADD COLUMN city VARCHAR(100)")
+
+            # Check messages table columns
+            res_m = await conn.exec_driver_sql("PRAGMA table_info(messages)")
+            msg_cols = {row[1] for row in res_m.fetchall()}
+            if "deliver_at" not in msg_cols:
+                await conn.exec_driver_sql("ALTER TABLE messages ADD COLUMN deliver_at DATETIME")
+            if "seen_at" not in msg_cols:
+                await conn.exec_driver_sql("ALTER TABLE messages ADD COLUMN seen_at DATETIME")
+            if "status" not in msg_cols:
+                await conn.exec_driver_sql("ALTER TABLE messages ADD COLUMN status VARCHAR(20) DEFAULT 'active'")
+            if "sequence_order" not in msg_cols:
+                await conn.exec_driver_sql("ALTER TABLE messages ADD COLUMN sequence_order INTEGER DEFAULT 0")
+            if "client_msg_id" not in msg_cols:
+                await conn.exec_driver_sql("ALTER TABLE messages ADD COLUMN client_msg_id VARCHAR(64)")
+        else:
+            # PostgreSQL
+            await conn.exec_driver_sql("ALTER TABLE users ADD COLUMN IF NOT EXISTS city VARCHAR(100);")
+            await conn.exec_driver_sql("ALTER TABLE messages ADD COLUMN IF NOT EXISTS deliver_at TIMESTAMP WITH TIME ZONE;")
+            await conn.exec_driver_sql("ALTER TABLE messages ADD COLUMN IF NOT EXISTS seen_at TIMESTAMP WITH TIME ZONE;")
+            await conn.exec_driver_sql("ALTER TABLE messages ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'active';")
+            await conn.exec_driver_sql("ALTER TABLE messages ADD COLUMN IF NOT EXISTS sequence_order INTEGER DEFAULT 0;")
+            await conn.exec_driver_sql("ALTER TABLE messages ADD COLUMN IF NOT EXISTS client_msg_id VARCHAR(64);")
+
+        # Backfill deliver_at, seen_at, status, sequence_order for any legacy rows
+        await conn.exec_driver_sql("UPDATE messages SET deliver_at = created_at WHERE deliver_at IS NULL")
+        await conn.exec_driver_sql("UPDATE messages SET seen_at = created_at WHERE seen_at IS NULL")
+        await conn.exec_driver_sql("UPDATE messages SET status = 'active' WHERE status IS NULL")
+        await conn.exec_driver_sql("UPDATE messages SET sequence_order = 0 WHERE sequence_order IS NULL")
 
     # Seed Persona 1 (Aanya)
     async with async_session_factory() as session:
