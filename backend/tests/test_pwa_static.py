@@ -20,3 +20,14 @@ async def test_frontend_pwa_files_served(client):
     res_sw = await client.get("/public/sw.js")
     assert res_sw.status_code == 200
     assert "CACHE_NAME" in res_sw.text
+
+    # Test api.js
+    res_api = await client.get("/js/api.js")
+    assert res_api.status_code == 200
+    assert "ai_disclosure_accepted: aiAccepted" in res_api.text
+    assert "aiDisclosureAccepted" not in res_api.text
+
+    # Test app.js
+    res_app = await client.get("/js/app.js")
+    assert res_app.status_code == 200
+    assert "resetSessionToOnboarding" in res_app.text

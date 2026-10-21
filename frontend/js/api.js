@@ -8,7 +8,7 @@ export const api = {
       body: JSON.stringify({
         username,
         age_confirmed: ageConfirmed,
-        ai_disclosure_accepted: aiDisclosureAccepted,
+        ai_disclosure_accepted: aiAccepted,
         city: city && city.trim() ? city.trim() : null
       })
     });
