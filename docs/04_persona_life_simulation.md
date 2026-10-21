@@ -49,7 +49,7 @@ the character's context explicitly:
 -   Weekend habits.
 -   Friends and hobbies.
 -   Relevant local events and festivals.
--   First encounter scenario: grounded in a vivid, relatable cultural setting (such as an amusing cafe mix-up in Indiranagar, a lively Delhi metro commute occurrence, or a shared monsoon shelter) that gives the first message immediate warmth and humor rather than sterile small talk.
+-   First encounter scenario: authentic online stranger introduction between two people meeting on the platform (*"Hey [Name]! Nice to connect with you :)"*). The persona introduces herself warmly, shares her current schedule-derived activity, and connects over the user's city or daily rhythms without hallucinating false physical encounters (such as latte cup mix-ups in cafes or metro gate incidents when the user is located in Kolkata or Delhi).
 
 A Bengali character in Kolkata, a professional in Bengaluru, and a
 student in Jaipur may have very different routines. Cultural details
@@ -68,6 +68,38 @@ distribution. - Sleep and quiet periods constrain availability.
 
 The system should not pretend to observe real-world events. The life is
 fictional and simulated.
+
+### Dynamic availability & IST response pacing model
+
+To feel like an authentic living person rather than an instant query-response bot, response pacing is driven by Indian Standard Time (IST, `Asia/Kolkata`) and persona activities:
+
+1. **Schedule-Derived Activities:**
+   - **08:00 – 10:30 (Morning):** Morning chai & checking design notifications (`quick` availability, 2–4s read delay).
+   - **10:30 – 13:00 (Late Morning):** Deep Figma UI design sprint at Indiranagar studio (`moderate` availability, 6–10s read delay).
+   - **13:00 – 14:30 (Lunch):** Grabbing lunch & casual stroll (`moderate` availability, 8–12s read delay; lunch is never scheduled at 8 AM).
+   - **14:30 – 17:30 (Afternoon):** In a client design critique meeting (`busy` availability, 15–22s read delay).
+   - **17:30 – 19:30 (Evening):** Metro commute & evening tea break (`moderate` availability, 6–10s read delay).
+   - **19:30 – 23:00 (Night):** Relaxing at home with indie music (`quick` availability, 2–4s read delay).
+   - **23:00 – 08:00 (Late Night):** Winding down with late night playlist (`moderate` availability, 4–8s read delay).
+
+2. **Mandatory Emotional Vulnerability Override:**
+   - Lonely, sad, anxious, or distressed messages (even non-crisis) **always force the Quick Tier (1.5s–2.5s)** regardless of the time of day or persona activity. An emotionally vulnerable user is never subjected to simulated delays.
+
+3. **Message Receipt Progression:**
+   - **Sent (`✓`):** User message dispatched and staged.
+   - **Delivered (`✓✓` grey):** Message reached persona device (`deliver_at`).
+   - **Seen (`✓✓` blue):** Persona opened chat (`seen_at = deliver_at + read_delay`).
+   - All message statuses and delivery times are stored server-side (`deliver_at`, `seen_at`) so browser reloads never leak unreceived future messages early.
+
+4. **Zero-Monetization & Free Skip:**
+   - Simulated busyness is purely realistic narrative texture. It is **never** tied to payment, subscriptions, or top-ups.
+   - The "Skip wait" action is permanently free.
+
+### Canonical persona identity & geographical consistency
+
+A persona maintains a single fixed canonical backstory:
+- **Aanya Sharma:** 24-year-old freelance UI/UX designer living in Indiranagar, Bengaluru; born and raised in Delhi.
+- **Geographical Reactions:** She relates to Bengaluru users as a fellow resident, Delhi users through her childhood roots, and users from Kolkata, Mumbai, or other cities with authentic cultural warmth and curiosity without contradicting her canonical backstory or falsely claiming to live there.
 
 ## Controlled non-determinism
 

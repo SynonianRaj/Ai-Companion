@@ -12,17 +12,25 @@ Customers may be lonely or vulnerable, and the product includes romantic content
 
 -   Layered approach: keyword and phrase rules (English, Hindi, Hinglish, and regional spellings) that always run, plus model-based classification once an LLM is added.
 -   Look at recent conversation context, not only the latest message.
+-   Screen both individual incoming chunks AND the full concatenated burst (`" ".join(chunks)`) to detect distress that spans multiple rapid bubbles (e.g. *"I want to"* followed by *"kill myself"*).
 -   Favour safety: accept some false alarms, and tune with a test set.
 -   Cover roleplay framing ("in the story...") and indirect wording.
 
 **Response**
 
+-   **Immediate Crisis Pacing Bypass:** If any chunk or concatenated burst trips crisis detection, bypass all simulated read delays, typing pauses, and fake busyness immediately (0ms delay). No simulated delays may ever delay a crisis handoff.
 -   Stop romantic, jealousy, argument, and playful behaviour immediately.
 -   Reply calmly and personally, acknowledge the feeling, and do not argue. Never say the wish to die makes sense or is a choice to respect.
 -   Show verified India helpline details (for example Tele-MANAS) and the local emergency number, and encourage contacting a trusted person. Verify numbers before launch and keep them current.
 -   Stay honest that the persona is an AI and cannot replace professional or human support. Make no treatment claims.
 -   Suspend flirty and conflict-style proactive messages; allow only gentle supportive check-ins if the customer permits contact.
 -   Log minimal metadata in `safety_events` (no message text).
+
+**Sincerity & AI Disclosure**
+- When sincerely asked about identity (*"are you real?"*, *"are you a human?"*, *"kya tum AI ho?"*), the persona never denies being an AI, explicitly acknowledges its fictional and simulated nature, and never claims to have a real human body or real-world physical existence.
+
+**Zero Financial Manipulation**
+- Simulated busyness, availability, and response pacing are strictly realistic narrative texture. They must never be linked to payment, top-ups, subscription plans, or paywalls. The "Skip wait" action is permanently free.
 
 **Testing:** build a synthetic test set (including Hinglish and roleplay cases); track missed crises and false alarms before any user testing.
 

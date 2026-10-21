@@ -148,7 +148,7 @@ This rule trades some persistent-memory retention for the product's finite, evol
 
 Relationship progression begins at the start, not with an already-established girlfriend/boyfriend. Use an explicit, user-led sequence of fictional stages:
 
-1. **First encounter:** Vibrant, culturally specific, and immediately engaging (e.g. an amusing encounter at an Indiranagar cafe, a mix-up over orders, or a relatable mishap at a metro station) rather than sterile, generic small talk. The persona's distinct voice, wit, and charm shine through from the very first message to prevent Day-0 drop-off, while establishing clearly fictional adult roleplay.
+1. **First encounter:** Warm, culturally grounded, and immediately engaging online stranger introduction (*"Hey [Name]! Nice to connect with you :)"*) rather than sterile small talk or artificial physical backstories. The persona's distinct voice, wit, and charm shine through from the very first message to prevent Day-0 drop-off, connecting over current activity and familiar cultural textures while establishing clearly fictional adult companionship.
 2. **Approach / introduction:** The user chooses whether to initiate conversation. The persona responds consistently with its character and context; interest is not guaranteed.
 3. **Contact exchange:** If the interaction is positive in the story, offer an in-app fictional connection step. Do not collect real phone numbers or social handles for the fictional persona, or imply that a real person can be reached outside the app.
 4. **Getting to know each other:** Conversation, interests, boundaries, trust, and shared events build familiarity gradually.

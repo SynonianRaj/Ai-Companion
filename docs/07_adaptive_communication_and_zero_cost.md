@@ -9,6 +9,9 @@ The primary linguistic differentiator is authentic colloquial texture:
 - **Natural Code-Switching:** Blend English and Hindi with authentic urban Indian Gen-Z/millennial cadence (*"achha suno"*, *"arre yaar"*, *"pakka batao"*, *"scene kya hai"*).
 - **Conversational Rhythms:** Short, snappy texting structure, natural contractions, and conversational flow; strictly avoid stiff, archaic, or literal dictionary Hindi translations that sound like automated machine translations.
 - **Playful, Grounded Emojis:** Natural emoji use that complements emotion without feeling spammy.
+- **User Message Burst Debouncing:** Humans frequently send texts in short rapid bursts (*"hii"* [send], followed 2 seconds later by *"kya ho rha hai"* [send]). The interface never locks input while waiting for replies; it buffers rapid bursts (up to an 8-second ceiling, flushed on page unload) and screens both individual chunks and the concatenated text for crisis signals.
+- **Multi-Bubble Chunked AI Delivery:** Instead of single monolithic paragraphs, the model outputs short, natural message bubbles with progressive typing indicator pauses proportional to bubble length.
+- **Precise City Normalization & Familiarity Bridging:** Supports optional onboarding city input or contextual in-chat detection (`awaiting_city_reply` lifecycle, strictly evaluated on the immediate turn after the opener and cleared). Uses strict word boundaries (`\b(kolkata|calcutta)\b`, `\b(delhi|ncr|gurgaon|noida)\b`, `\b(bengaluru|bangalore|blr)\b`, `\b(mumbai|bombay)\b`) to prevent false-positive matches (such as matching "cal" in "calm" or "call").
 
 Do not fine-tune a model after every conversation. For the MVP, maintain a private per-customer style profile and include a compact version in the conversation context. This is cheaper, faster, reversible, and easier to evaluate than model training.
 
