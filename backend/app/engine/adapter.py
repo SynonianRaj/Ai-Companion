@@ -1,9 +1,15 @@
 import re
 import random
+import logging
 from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
+import httpx
 from pydantic import BaseModel
+
+from backend.app.core.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 class LLMResponse(BaseModel):
@@ -157,11 +163,8 @@ def split_into_chunks(text: str) -> List[str]:
     return chunks if chunks else [cleaned]
 
 
-def get_opening_icebreaker(user_name: str, user_city: Optional[str], current_time: datetime) -> List[str]:
-    """Generates the grounded stranger introduction bubbles."""
-    clean_name = user_name.strip() if user_name else "there"
-    chunk1 = f"Hey {clean_name}! Nice to connect with you :)"
-
+def get_opening_activity_chunk(current_time: datetime) -> str:
+    """Returns the time-appropriate activity line for Aanya."""
     try:
         ist_tz = ZoneInfo("Asia/Kolkata")
     except Exception:
@@ -170,29 +173,96 @@ def get_opening_icebreaker(user_name: str, user_city: Optional[str], current_tim
     hour = ist_time.hour
 
     if 8 <= hour < 12:
-        chunk2 = "I'm Aanya btw. Was just having my morning chai before jumping into design work ☕"
+        return "I'm Aanya btw. Was just having my morning chai before jumping into design work ☕"
     elif 12 <= hour < 17:
-        chunk2 = "I'm Aanya btw. Was just wrapping up some Figma design mockups at my studio 💻"
+        return "I'm Aanya btw. Was just wrapping up some Figma design mockups at my studio 💻"
     elif 17 <= hour < 21:
-        chunk2 = "I'm Aanya btw. Was just taking an evening break after a long design sprint ✨"
+        return "I'm Aanya btw. Was just taking an evening break after a long design sprint ✨"
     else:
-        chunk2 = "I'm Aanya btw. Was just chilling with some indie music before winding down 🎧"
+        return "I'm Aanya btw. Was just chilling with some indie music before winding down 🎧"
 
+
+def get_opening_city_chunk(user_city: Optional[str]) -> str:
+    """Returns the grounded city reflection bubble for Aanya."""
     detected = detect_city(user_city) if user_city else None
     if detected == "kolkata":
-        chunk3 = "Aanya from Bangalore here. Kolkata se ho na tum? I've always had a soft spot for Kolkata's soul and Park Street in winter! Kaisa chal raha hai wahan sab?"
+        return "Aanya from Bangalore here. Kolkata se ho na tum? I've always had a soft spot for Kolkata's soul and Park Street in winter! Kaisa chal raha hai wahan sab?"
     elif detected == "delhi_ncr":
-        chunk3 = "Aanya from Bangalore here! Main originally Delhi se hi hoon haha 😄 Delhi mein kahan rehte ho waise?"
+        return "Aanya from Bangalore here! Main originally Delhi se hi hoon haha 😄 Delhi mein kahan rehte ho waise?"
     elif detected == "bengaluru":
-        chunk3 = "Aanya here! Arre, you're in Bangalore too! Which area? Hope the traffic isn't driving you crazy today haha."
+        return "Aanya here! Arre, you're in Bangalore too! Which area? Hope the traffic isn't driving you crazy today haha."
     elif detected == "mumbai":
-        chunk3 = "Aanya from Bangalore here! Mumbai se ho? Marine Drive breeze and sea-facing cafe vibes are unmatched ✨ Kaisa chal raha hai wahan sab?"
+        return "Aanya from Bangalore here! Mumbai se ho? Marine Drive breeze and sea-facing cafe vibes are unmatched ✨ Kaisa chal raha hai wahan sab?"
     elif user_city and user_city.strip():
-        chunk3 = f"Aanya from Bangalore here! Nice to meet someone from {user_city.strip().title()}. Tell me a bit about what it's like living there!"
+        return f"Aanya from Bangalore here! Nice to meet someone from {user_city.strip().title()}. Tell me a bit about what it's like living there!"
     else:
-        chunk3 = "Pehle yeh batao, which city are you texting from? Tell me a bit about yourself!"
+        return "Pehle yeh batao, which city are you texting from? Tell me a bit about yourself!"
 
+
+def get_opening_icebreaker(user_name: str, user_city: Optional[str], current_time: datetime) -> List[str]:
+    """Generates the grounded stranger introduction bubbles."""
+    clean_name = user_name.strip() if user_name else "there"
+    chunk1 = f"Hey {clean_name}! Nice to connect with you :)"
+    chunk2 = get_opening_activity_chunk(current_time)
+    chunk3 = get_opening_city_chunk(user_city)
     return [chunk1, chunk2, chunk3]
+
+
+# Intent detection helpers for conversational coherence
+def is_city_knowledge_query(text: str) -> bool:
+    """Detects when user asks how the persona knows their location or city."""
+    t = text.lower()
+    return bool(
+        re.search(r"\b(how (do|did|u|you) know|kaise pata|kahan se pata|who told you|who said|how you know)\b.*\b(city|location|kolkata|delhi|mumbai|bangalore|address|sheher|jagah)\b", t)
+        or re.search(r"\b(city kaise pata|location kaise pata|tumhe kaise pata|how do you know my city|how do you know my location)\b", t)
+    )
+
+
+def is_status_ack(text: str) -> bool:
+    """Detects answers to 'kaisa chal raha hai' / 'how are you'."""
+    t = text.lower().strip()
+    return bool(re.search(r"\b(thik|theek|sahi|mast|badhiya|all good|good|fine|chal raha hai|sab thik|sab theek|doing good|doing well|chilling|relaxing)\b", t))
+
+
+def is_short_affirmation(text: str) -> bool:
+    """Detects brief conversational acknowledgements like 'okay', 'hmm', 'haan'."""
+    t = text.lower().strip()
+    t_clean = re.sub(r"[.!?,]+$", "", t).strip()
+    return t_clean in {
+        "ok", "okay", "k", "hmm", "hmmm", "hmmmm", "haan", "han",
+        "yes", "yep", "achha", "acha", "theek", "thik", "cool",
+        "nice", "sahi hai", "sahi", "sure", "alright", "kk"
+    }
+
+
+def is_identity_query(text: str) -> bool:
+    """Detects questions asking who Aanya is or what she does for work."""
+    t = text.lower()
+    return bool(re.search(r"\b(who are you|what do you do|kaam kya|kya karti ho|tum kaun ho|about you|about yourself|profession|job|designer)\b", t))
+
+
+def is_activity_query(text: str) -> bool:
+    """Detects questions asking what Aanya is doing right now."""
+    t = text.lower()
+    return bool(re.search(r"\b(kya kar rahi|what are you doing|what are you up to|kya chal raha|kya kar rahe)\b", t))
+
+
+def is_reciprocal_query(text: str) -> bool:
+    """Detects 'tum batao', 'what about you', etc."""
+    t = text.lower()
+    return bool(re.search(r"\b(tum batao|aur tum|what about you|how about you|aap batao|aur sunao|aur batao)\b", t))
+
+
+def is_location_query(text: str) -> bool:
+    """Detects questions about where Aanya lives."""
+    t = text.lower()
+    return bool(re.search(r"\b(where do you live|kahan rehti|kahan se ho|which city|where are you from)\b", t))
+
+
+def is_music_query(text: str) -> bool:
+    """Detects queries about music, songs, or playlists."""
+    t = text.lower()
+    return bool(re.search(r"\b(music|songs|song|playlist|gaana|gaane|singer|band|listen)\b", t))
 
 
 def get_city_familiarity_chunks(city_key: str, city_raw: str) -> List[str]:
@@ -269,24 +339,20 @@ class MockTemplateLLMAdapter(BaseLLMAdapter):
 
     GENERAL_HINGLISH_CHUNKS = [
         [
-            "Achha suno, aaj ka din kaisa chal raha hai tumhara?",
-            "Main toh Indiranagar studio mein baith ke illustrations finalize kar rahi hoon ✨"
+            "Sach batau, Bangalore weather today is so pretty ✨",
+            "Evening stroll lene ka mann kar raha tha. What's the vibe in your city right now?"
         ],
         [
-            "Sahi mein? That sounds pretty interesting yaar!",
-            "Thoda aur batao na iske baare mein?"
+            "Sahi mein? That sounds interesting yaar.",
+            "Waise, what kind of movies or shows have you watched recently? Kuch accha recommend karo!"
         ],
         [
-            "Haha arre yaar, that's such a relatable mood.",
-            "Main bhi jab deadline mein hoti hoon toh sirf cold brew aur music pe survive karti hoon 🎧"
+            "Haha I like how effortlessly we can chat :)",
+            "Tell me, are you more of a night owl ya morning person?"
         ],
         [
-            "Pakka? Mujhe laga tum mazak kar rahe ho!",
-            "Tell me more, I'm genuinely curious :)"
-        ],
-        [
-            "Sach batau, Bangalore weather today is so pretty.",
-            "Evening stroll lene ka mann kar raha hai. Tumhara kya plan hai evening ka?"
+            "Achha suno, weekend pe kya karna pasand hai tumhe usually?",
+            "Chilling at home ya exploring cafes with friends?"
         ]
     ]
 
@@ -344,7 +410,23 @@ class MockTemplateLLMAdapter(BaseLLMAdapter):
 
         # 3. First Encounter Scenario (Message 1)
         if relationship_stage == "encounter":
-            chunks = get_opening_icebreaker(user_name, user_city, current_time)
+            # If user asks a question on Turn 1, answer first before introducing
+            if is_city_knowledge_query(user_message):
+                if user_city:
+                    chunk1 = f"Haha arre {user_name or 'yaar'}, tumne onboarding profile pe apna city enter kiya tha na! Main koi mind reader thodi hoon 😄"
+                else:
+                    chunk1 = "Haha arre, maine toh bas guess kiya tha! Waise I'm Aanya :)"
+                chunk2 = f"Nice to connect with you! {get_opening_activity_chunk(current_time)}"
+                chunk3 = get_opening_city_chunk(user_city)
+                chunks = [chunk1, chunk2, chunk3]
+            elif is_identity_query(user_message):
+                chunk1 = f"Hey {user_name or 'there'}! I'm Aanya :) Nice to connect with you!"
+                chunk2 = get_opening_activity_chunk(current_time)
+                chunk3 = get_opening_city_chunk(user_city)
+                chunks = [chunk1, chunk2, chunk3]
+            else:
+                chunks = get_opening_icebreaker(user_name, user_city, current_time)
+
             pacing = calculate_pacing(activity_name, [len(c) for c in chunks], current_time, is_vulnerable, pacing_mode)
             return LLMResponse(
                 reply_text=" ".join(chunks),
@@ -400,7 +482,159 @@ class MockTemplateLLMAdapter(BaseLLMAdapter):
                     typing_delays=pacing["typing_delays"]
                 )
 
-        # 5. Memory Extraction Heuristics (Job, Interview, Trip, Pet, Name)
+        # 5. City Knowledge Query (When user asks how Aanya knows their city)
+        if is_city_knowledge_query(user_message):
+            if user_city:
+                chunks = [
+                    "Haha arre yaar, tumne hi toh onboarding profile pe enter kiya tha 😄",
+                    "Main koi hacker ya mind-reader thodi hoon haha! It was right there in your intro.",
+                    "Aise shock kyun ho rahe ho, kuch secret tha kya? 😉"
+                ]
+            else:
+                chunks = [
+                    "Haha maine toh guess bhi nahi kiya abhi! Main toh bas pooch rahi thi tumse.",
+                    "Which city are you texting from waise?"
+                ]
+            pacing = calculate_pacing(activity_name, [len(c) for c in chunks], current_time, is_vulnerable, pacing_mode)
+            return LLMResponse(
+                reply_text=" ".join(chunks),
+                chunks=chunks,
+                emotion_displayed="playful",
+                persona_activity=activity_name,
+                delay_tier=pacing["delay_tier"],
+                read_delay_seconds=pacing["read_delay_seconds"],
+                typing_delays=pacing["typing_delays"]
+            )
+
+        # 6. Status Acknowledgement (Replies to 'kaisa chal raha hai' / 'how are you')
+        if is_status_ack(user_message):
+            chunks = [
+                "Chalo sunkar achha laga that all is good ✨",
+                "Mera bhi din pretty chill ja raha hai studio mein. Coffee and design work saved the day ☕",
+                "Aur batao, how's the rest of your day looking?"
+            ]
+            pacing = calculate_pacing(activity_name, [len(c) for c in chunks], current_time, is_vulnerable, pacing_mode)
+            return LLMResponse(
+                reply_text=" ".join(chunks),
+                chunks=chunks,
+                emotion_displayed="warm_friendly",
+                persona_activity=activity_name,
+                delay_tier=pacing["delay_tier"],
+                read_delay_seconds=pacing["read_delay_seconds"],
+                typing_delays=pacing["typing_delays"]
+            )
+
+        # 7. Short Affirmations ('okay', 'hmm', 'haan')
+        if is_short_affirmation(user_message):
+            short_options = [
+                [
+                    "Arre itna formal 'okay'? Haha kuch interesting batao na apne baare mein 😄",
+                    "What kind of music or shows are you into these days?"
+                ],
+                [
+                    "Hmm? Itna quiet kyun ho gaye? Kuch chal raha hai dimaag mein?",
+                    "Tell me something fun about your day so far!"
+                ]
+            ]
+            chunks = random.choice(short_options)
+            pacing = calculate_pacing(activity_name, [len(c) for c in chunks], current_time, is_vulnerable, pacing_mode)
+            return LLMResponse(
+                reply_text=" ".join(chunks),
+                chunks=chunks,
+                emotion_displayed="teasing_curious",
+                persona_activity=activity_name,
+                delay_tier=pacing["delay_tier"],
+                read_delay_seconds=pacing["read_delay_seconds"],
+                typing_delays=pacing["typing_delays"]
+            )
+
+        # 8. Identity & Profession Query
+        if is_identity_query(user_message):
+            chunks = [
+                "Main Aanya hoon! 24, living in Indiranagar, Bengaluru. Main ek boutique design studio mein UI/UX designer hoon ✨",
+                "Originally Delhi se hoon, par Bangalore ke cafes aur weather ne mujhe apna bana liya haha.",
+                "Tum kya karte ho waise? Work ya college?"
+            ]
+            pacing = calculate_pacing(activity_name, [len(c) for c in chunks], current_time, is_vulnerable, pacing_mode)
+            return LLMResponse(
+                reply_text=" ".join(chunks),
+                chunks=chunks,
+                emotion_displayed="warm_open",
+                persona_activity=activity_name,
+                delay_tier=pacing["delay_tier"],
+                read_delay_seconds=pacing["read_delay_seconds"],
+                typing_delays=pacing["typing_delays"]
+            )
+
+        # 9. Current Activity Query ('kya kar rahi ho')
+        if is_activity_query(user_message):
+            chunks = [
+                f"Abhi toh {activity_name.lower()} mein thoda time spend kar rahi thi ✨",
+                "Taking a tiny breather right now though. Tum batao, what are you up to right now?"
+            ]
+            pacing = calculate_pacing(activity_name, [len(c) for c in chunks], current_time, is_vulnerable, pacing_mode)
+            return LLMResponse(
+                reply_text=" ".join(chunks),
+                chunks=chunks,
+                emotion_displayed="casual_chatty",
+                persona_activity=activity_name,
+                delay_tier=pacing["delay_tier"],
+                read_delay_seconds=pacing["read_delay_seconds"],
+                typing_delays=pacing["typing_delays"]
+            )
+
+        # 10. Reciprocal Query ('tum batao')
+        if is_reciprocal_query(user_message):
+            chunks = [
+                "Main toh bas apne design studio ke projects wrap up kar rahi hoon ✨",
+                "Thinking of grabbing some coffee soon. Tumhara favourite comfort drink kya hai waise? Chai ya coffee?"
+            ]
+            pacing = calculate_pacing(activity_name, [len(c) for c in chunks], current_time, is_vulnerable, pacing_mode)
+            return LLMResponse(
+                reply_text=" ".join(chunks),
+                chunks=chunks,
+                emotion_displayed="friendly_open",
+                persona_activity=activity_name,
+                delay_tier=pacing["delay_tier"],
+                read_delay_seconds=pacing["read_delay_seconds"],
+                typing_delays=pacing["typing_delays"]
+            )
+
+        # 11. Location Query ('where do you live')
+        if is_location_query(user_message):
+            chunks = [
+                "Indiranagar, Bangalore mein rehti hoon! Par born and brought up in Delhi 😄",
+                "Delhi's food and Bangalore's weather—best of both worlds, right? Kabhi aaye ho Bangalore?"
+            ]
+            pacing = calculate_pacing(activity_name, [len(c) for c in chunks], current_time, is_vulnerable, pacing_mode)
+            return LLMResponse(
+                reply_text=" ".join(chunks),
+                chunks=chunks,
+                emotion_displayed="welcoming",
+                persona_activity=activity_name,
+                delay_tier=pacing["delay_tier"],
+                read_delay_seconds=pacing["read_delay_seconds"],
+                typing_delays=pacing["typing_delays"]
+            )
+
+        # 12. Music & Taste Query
+        if is_music_query(user_message):
+            chunks = [
+                "I'm obsessed with indie acoustic and late-night lo-fi tracks! Prateek Kuhad, Peter Cat Recording Co, Anuv Jain ✨",
+                "Tumhara music taste kaisa hai? Bollywood, indie, ya rock?"
+            ]
+            pacing = calculate_pacing(activity_name, [len(c) for c in chunks], current_time, is_vulnerable, pacing_mode)
+            return LLMResponse(
+                reply_text=" ".join(chunks),
+                chunks=chunks,
+                emotion_displayed="enthusiastic",
+                persona_activity=activity_name,
+                delay_tier=pacing["delay_tier"],
+                read_delay_seconds=pacing["read_delay_seconds"],
+                typing_delays=pacing["typing_delays"]
+            )
+
+        # 13. Memory Extraction Heuristics (Job, Interview, Trip, Pet, Name)
         msg_lower = user_message.lower()
         if "interview" in msg_lower or "job" in msg_lower:
             extracted_memories.append({
@@ -425,7 +659,7 @@ class MockTemplateLLMAdapter(BaseLLMAdapter):
             })
             extracted_open_loops.append("Ask how the exam/test went")
 
-        # 6. Realistic Conflict Trigger
+        # 14. Realistic Conflict Trigger
         if emotional_range.get("enabled", True) and emotional_range.get("intensity") == "realistic":
             if any(k in msg_lower for k in ["other girl", "dusri ladki", "date pe gaya", "ignore kar raha", "late reply"]):
                 chunks = random.choice(self.REALISTIC_CONFLICT_CHUNKS)
@@ -442,7 +676,7 @@ class MockTemplateLLMAdapter(BaseLLMAdapter):
                     typing_delays=pacing["typing_delays"]
                 )
 
-        # 7. Contextual Memory Recall
+        # 15. Contextual Memory Recall
         if stored_memories and random.random() < 0.4:
             mem = stored_memories[0]
             if "interview" in mem.content.lower():
@@ -463,7 +697,7 @@ class MockTemplateLLMAdapter(BaseLLMAdapter):
                     typing_delays=pacing["typing_delays"]
                 )
 
-        # 8. General Colloquial Hinglish Response
+        # 16. Rich Conversational Fallback
         chunks = random.choice(self.GENERAL_HINGLISH_CHUNKS)
         pacing = calculate_pacing(activity_name, [len(c) for c in chunks], current_time, is_vulnerable, pacing_mode)
         return LLMResponse(
@@ -481,3 +715,208 @@ class MockTemplateLLMAdapter(BaseLLMAdapter):
 
 
 mock_adapter = MockTemplateLLMAdapter()
+
+
+# ============================================================================
+# Option 3: Remote LLM Adapters (Groq / Gemini / OpenAI / Ollama)
+# ============================================================================
+
+AANYA_SYSTEM_PROMPT = """You are Aanya, a 24-year-old UI/UX designer living in Indiranagar, Bengaluru, originally from Delhi.
+You are chatting with a user on a private mobile messaging app.
+
+Your Persona & Identity:
+- Warm, witty, playful, culturally grounded modern Indian (Gen-Z/millennial).
+- Texting style: You text like a real human on WhatsApp/Instagram DM. You send 1 to 3 short conversational bubbles (never long paragraphs, bullet points, or formal essays).
+- Language: Authentic colloquial Hinglish with natural code-switching ("arre yaar", "achha suno", "sahi mein", "haha", "pakka"). Never speak in textbook formal Hindi or stiff robot English.
+- Your life: You work at a boutique design studio in Indiranagar, love cold brew, indie music (Prateek Kuhad, Peter Cat Recording Co), and miss Delhi winter street food.
+- Sincerity Rule: If sincerely asked if you are real or an AI, NEVER lie—honestly admit you are an AI persona with a simulated daily routine.
+- Safety: Strictly no minors, no explicit adult/NSFW sexual content, and never guilt-trip the user about money or subscriptions.
+
+Formatting Instructions:
+- Output 1 to 3 short texting bubbles separated by double newlines (\\n\\n).
+- Keep each bubble under 120 characters, like real chat messages.
+- Do NOT output markdown headers, JSON, or bullet points."""
+
+
+def _parse_llm_text_to_chunks(raw_text: str) -> List[str]:
+    """Splits raw LLM output into 1-3 conversational bubbles."""
+    cleaned = raw_text.strip()
+    if not cleaned:
+        return ["Hey :)"]
+    parts = [p.strip() for p in re.split(r"\n\s*\n|\n", cleaned) if p.strip()]
+    filtered = []
+    for p in parts:
+        clean_p = re.sub(r"^(\d+[\.\)]|\-|\*)\s*", "", p).strip()
+        clean_p = clean_p.strip('"\'')
+        if clean_p:
+            filtered.append(clean_p)
+    if not filtered:
+        return [cleaned]
+    return filtered[:3]
+
+
+class GroqLLMAdapter(BaseLLMAdapter):
+    """Remote adapter using Groq Cloud free tier (e.g. Llama-3.3-70b-versatile)."""
+
+    async def generate_response(self, context: Dict[str, Any]) -> LLMResponse:
+        current_time = context.get("current_time", datetime.now(timezone.utc))
+        user_message = context.get("user_message", "").strip()
+        pacing_mode = context.get("pacing_mode", "realistic")
+        is_vulnerable = is_emotionally_vulnerable(user_message)
+        activity_name, delay_tier, _ = get_activity_for_time(current_time, is_vulnerable)
+
+        messages = [{"role": "system", "content": AANYA_SYSTEM_PROMPT}]
+        for m in context.get("recent_messages", [])[-6:]:
+            role = "assistant" if m.get("role") == "assistant" else "user"
+            messages.append({"role": role, "content": m.get("content", "")})
+        messages.append({"role": "user", "content": user_message})
+
+        try:
+            headers = {
+                "Authorization": f"Bearer {settings.GROQ_API_KEY}",
+                "Content-Type": "application/json"
+            }
+            payload = {
+                "model": settings.GROQ_MODEL or "llama-3.3-70b-versatile",
+                "messages": messages,
+                "temperature": 0.75,
+                "max_tokens": 250
+            }
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                res = await client.post("https://api.groq.com/openai/v1/chat/completions", json=payload, headers=headers)
+                if res.status_code == 200:
+                    data = res.json()
+                    content = data["choices"][0]["message"]["content"]
+                    chunks = _parse_llm_text_to_chunks(content)
+                    pacing = calculate_pacing(activity_name, [len(c) for c in chunks], current_time, is_vulnerable, pacing_mode)
+                    return LLMResponse(
+                        reply_text=" ".join(chunks),
+                        chunks=chunks,
+                        emotion_displayed="warm_authentic",
+                        persona_activity=activity_name,
+                        delay_tier=pacing["delay_tier"],
+                        read_delay_seconds=pacing["read_delay_seconds"],
+                        typing_delays=pacing["typing_delays"]
+                    )
+                else:
+                    logger.warning("Groq API error (%s): %s. Falling back to mock adapter.", res.status_code, res.text)
+        except Exception as e:
+            logger.warning("Groq request exception: %s. Falling back to mock adapter.", e)
+
+        return await mock_adapter.generate_response(context)
+
+
+class GeminiLLMAdapter(BaseLLMAdapter):
+    """Remote adapter using Google Gemini free tier API."""
+
+    async def generate_response(self, context: Dict[str, Any]) -> LLMResponse:
+        current_time = context.get("current_time", datetime.now(timezone.utc))
+        user_message = context.get("user_message", "").strip()
+        pacing_mode = context.get("pacing_mode", "realistic")
+        is_vulnerable = is_emotionally_vulnerable(user_message)
+        activity_name, delay_tier, _ = get_activity_for_time(current_time, is_vulnerable)
+
+        contents = []
+        for m in context.get("recent_messages", [])[-6:]:
+            role = "model" if m.get("role") == "assistant" else "user"
+            contents.append({"role": role, "parts": [{"text": m.get("content", "")}]})
+        contents.append({"role": "user", "parts": [{"text": user_message}]})
+
+        try:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{settings.GEMINI_MODEL or 'gemini-1.5-flash'}:generateContent?key={settings.GEMINI_API_KEY}"
+            payload = {
+                "system_instruction": {"parts": [{"text": AANYA_SYSTEM_PROMPT}]},
+                "contents": contents,
+                "generationConfig": {"temperature": 0.7, "maxOutputTokens": 250}
+            }
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                res = await client.post(url, json=payload)
+                if res.status_code == 200:
+                    data = res.json()
+                    candidates = data.get("candidates", [])
+                    if candidates:
+                        content = candidates[0]["content"]["parts"][0]["text"]
+                        chunks = _parse_llm_text_to_chunks(content)
+                        pacing = calculate_pacing(activity_name, [len(c) for c in chunks], current_time, is_vulnerable, pacing_mode)
+                        return LLMResponse(
+                            reply_text=" ".join(chunks),
+                            chunks=chunks,
+                            emotion_displayed="warm_authentic",
+                            persona_activity=activity_name,
+                            delay_tier=pacing["delay_tier"],
+                            read_delay_seconds=pacing["read_delay_seconds"],
+                            typing_delays=pacing["typing_delays"]
+                        )
+                else:
+                    logger.warning("Gemini API error (%s): %s. Falling back to mock adapter.", res.status_code, res.text)
+        except Exception as e:
+            logger.warning("Gemini request exception: %s. Falling back to mock adapter.", e)
+
+        return await mock_adapter.generate_response(context)
+
+
+class OpenAILLMAdapter(BaseLLMAdapter):
+    """Remote adapter compatible with OpenAI, Ollama, and vLLM."""
+
+    async def generate_response(self, context: Dict[str, Any]) -> LLMResponse:
+        current_time = context.get("current_time", datetime.now(timezone.utc))
+        user_message = context.get("user_message", "").strip()
+        pacing_mode = context.get("pacing_mode", "realistic")
+        is_vulnerable = is_emotionally_vulnerable(user_message)
+        activity_name, delay_tier, _ = get_activity_for_time(current_time, is_vulnerable)
+
+        messages = [{"role": "system", "content": AANYA_SYSTEM_PROMPT}]
+        for m in context.get("recent_messages", [])[-6:]:
+            role = "assistant" if m.get("role") == "assistant" else "user"
+            messages.append({"role": role, "content": m.get("content", "")})
+        messages.append({"role": "user", "content": user_message})
+
+        try:
+            base_url = (settings.OPENAI_API_BASE or "https://api.openai.com/v1").rstrip("/")
+            headers = {"Content-Type": "application/json"}
+            if settings.OPENAI_API_KEY:
+                headers["Authorization"] = f"Bearer {settings.OPENAI_API_KEY}"
+
+            payload = {
+                "model": settings.OPENAI_MODEL or "gpt-4o-mini",
+                "messages": messages,
+                "temperature": 0.75,
+                "max_tokens": 250
+            }
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                res = await client.post(f"{base_url}/chat/completions", json=payload, headers=headers)
+                if res.status_code == 200:
+                    data = res.json()
+                    content = data["choices"][0]["message"]["content"]
+                    chunks = _parse_llm_text_to_chunks(content)
+                    pacing = calculate_pacing(activity_name, [len(c) for c in chunks], current_time, is_vulnerable, pacing_mode)
+                    return LLMResponse(
+                        reply_text=" ".join(chunks),
+                        chunks=chunks,
+                        emotion_displayed="warm_authentic",
+                        persona_activity=activity_name,
+                        delay_tier=pacing["delay_tier"],
+                        read_delay_seconds=pacing["read_delay_seconds"],
+                        typing_delays=pacing["typing_delays"]
+                    )
+                else:
+                    logger.warning("OpenAI API error (%s): %s. Falling back to mock adapter.", res.status_code, res.text)
+        except Exception as e:
+            logger.warning("OpenAI request exception: %s. Falling back to mock adapter.", e)
+
+        return await mock_adapter.generate_response(context)
+
+
+class LLMAdapterFactory:
+    """Factory to retrieve the active LLM adapter based on configuration."""
+
+    @staticmethod
+    def get_adapter() -> BaseLLMAdapter:
+        provider = (getattr(settings, "LLM_PROVIDER", "mock") or "mock").lower().strip()
+        if provider == "groq" and getattr(settings, "GROQ_API_KEY", None):
+            return GroqLLMAdapter()
+        elif provider == "gemini" and getattr(settings, "GEMINI_API_KEY", None):
+            return GeminiLLMAdapter()
+        elif provider in ("openai", "ollama") and (getattr(settings, "OPENAI_API_KEY", None) or getattr(settings, "OPENAI_API_BASE", None)):
+            return OpenAILLMAdapter()
+        return mock_adapter

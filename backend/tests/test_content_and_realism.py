@@ -142,3 +142,86 @@ def test_emotional_vulnerability_override():
     pacing = calculate_pacing("Winding down", [25, 40], t_night, is_vulnerable=True, pacing_mode="realistic")
     assert pacing["delay_tier"] == "quick"
     assert pacing["read_delay_seconds"] <= 2.5
+
+
+@pytest.mark.asyncio
+async def test_contextual_dialogue_city_query():
+    # When user asks how Aanya knows their city
+    context = {
+        "user_message": "thik chal rhaa hai... but how do you know my city?",
+        "relationship_stage": "getting_to_know",
+        "user_name": "syno",
+        "user_city": "Kolkata"
+    }
+    res = await mock_adapter.generate_response(context)
+    reply = res.reply_text.lower()
+    assert "onboarding" in reply or "intro" in reply or "enter kiya tha" in reply
+    assert "mind-reader" in reply or "mind reader" in reply or "hacker" in reply
+    # Must NOT return disconnected templates like cold brew during deadlines
+    assert "deadline" not in reply
+
+
+@pytest.mark.asyncio
+async def test_contextual_dialogue_status_ack():
+    # When user answers "thik chal raha hai"
+    context = {
+        "user_message": "thik chal raha hai",
+        "relationship_stage": "getting_to_know",
+        "user_name": "syno",
+        "user_city": "Kolkata"
+    }
+    res = await mock_adapter.generate_response(context)
+    reply = res.reply_text.lower()
+    assert "sunkar achha laga" in reply or "all is good" in reply
+    assert "deadline" not in reply
+
+
+@pytest.mark.asyncio
+async def test_contextual_dialogue_short_affirmations():
+    # Short responses like "okay", "hmm"
+    for short_reply in ["okay", "ok", "hmm"]:
+        context = {
+            "user_message": short_reply,
+            "relationship_stage": "getting_to_know",
+            "user_name": "syno"
+        }
+        res = await mock_adapter.generate_response(context)
+        # Should playfully bridge the chat rather than emitting random deadline sentences
+        assert len(res.chunks) >= 1
+        assert "deadline" not in res.reply_text.lower()
+
+
+@pytest.mark.asyncio
+async def test_contextual_dialogue_turn1_question_awareness():
+    # If user asks how she knows location on Turn 1
+    context = {
+        "user_message": "how do you know my location",
+        "relationship_stage": "encounter",
+        "user_name": "syno",
+        "user_city": "Kolkata"
+    }
+    res = await mock_adapter.generate_response(context)
+    # Turn 1 must address the question in chunk 1
+    assert "onboarding" in res.chunks[0].lower() or "mind reader" in res.chunks[0].lower()
+    assert "aanya" in res.reply_text.lower()
+
+
+@pytest.mark.asyncio
+async def test_llm_adapter_factory_and_fallback():
+    from backend.app.engine.adapter import LLMAdapterFactory, MockTemplateLLMAdapter, GroqLLMAdapter
+    from backend.app.core.config import settings
+
+    # Default provider is mock
+    settings.LLM_PROVIDER = "mock"
+    adapter = LLMAdapterFactory.get_adapter()
+    assert isinstance(adapter, MockTemplateLLMAdapter)
+
+    # Groq without API key falls back to mock
+    settings.LLM_PROVIDER = "groq"
+    settings.GROQ_API_KEY = None
+    adapter = LLMAdapterFactory.get_adapter()
+    assert isinstance(adapter, MockTemplateLLMAdapter)
+
+    # Reset
+    settings.LLM_PROVIDER = "mock"
+

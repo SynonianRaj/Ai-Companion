@@ -14,7 +14,9 @@ from backend.app.safety.content_gate import content_gate
 from backend.app.services.clock_service import ClockService
 from backend.app.services.lifecycle_service import lifecycle_service
 from backend.app.services.memory_service import memory_service
-from backend.app.engine.adapter import mock_adapter, LLMResponse, calculate_pacing, get_activity_for_time
+from backend.app.engine.adapter import (
+    LLMAdapterFactory, mock_adapter, LLMResponse, calculate_pacing, get_activity_for_time
+)
 
 
 class Orchestrator:
@@ -366,12 +368,31 @@ class Orchestrator:
             )
 
             # Step 6: Assemble Context & Generate Model Chunks
+            # Retrieve recent active conversation history for multi-turn dialogue context
+            recent_msgs_stmt = (
+                select(Message)
+                .where(
+                    and_(
+                        Message.relationship_id == relationship.id,
+                        Message.status == "active"
+                    )
+                )
+                .order_by(Message.created_at.desc(), Message.sequence_order.desc())
+                .limit(8)
+            )
+            recent_msgs_raw = (await session.execute(recent_msgs_stmt)).scalars().all()
+            recent_messages = [
+                {"role": m.role, "content": m.content}
+                for m in reversed(recent_msgs_raw)
+            ]
+
             context = {
                 "user_message": combined_text,
                 "relationship_stage": relationship.relationship_stage,
                 "lifecycle_status": relationship.lifecycle_status,
                 "emotional_range": relationship.emotional_range_setting or {"enabled": True, "intensity": "realistic"},
                 "memories": scoped_memories,
+                "recent_messages": recent_messages,
                 "is_ai_query": is_ai_query,
                 "user_name": user.username,
                 "user_city": user.city,
@@ -380,7 +401,8 @@ class Orchestrator:
                 "pacing_mode": pacing_mode
             }
 
-            response: LLMResponse = await mock_adapter.generate_response(context)
+            active_adapter = LLMAdapterFactory.get_adapter()
+            response: LLMResponse = await active_adapter.generate_response(context)
 
             # If opening turn and user has no city, set awaiting_city_reply for next turn
             if relationship.relationship_stage == "encounter" and not user.city:

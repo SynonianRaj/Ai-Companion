@@ -68,9 +68,31 @@ Consider paid inference only after the prototype works, testers show repeat use,
 | Database | PostgreSQL (local) |
 | Scheduler | Simple local process for prototype |
 | Memory | SQL + keyword/full-text search first |
-| Dialogue | Template/mock first; optional local model later |
+| Dialogue | Hybrid: Intelligent Contextual Engine (default ₹0) + Swappable LLM (Groq/Gemini/OpenAI/Ollama via `.env`) |
 | Hosting | Local only until remote demo is needed |
 | Version control | Git + free repository |
+
+## Hybrid Architecture (Option 3: Contextual Engine & Swappable LLM)
+
+To ensure the prototype never outputs disconnected random templates in offline ₹0 mode while allowing easy integration with real models, the dialogue layer uses a hybrid adapter:
+
+1. **Intelligent Contextual Dialogue Engine (`MockTemplateLLMAdapter`)**:
+   - Handles conversational intents:
+     - Profile and location inquiries (e.g. *"how do you know my location/city"* -> explains onboarding entry).
+     - First-turn question routing (addresses queries before introducing Aanya).
+     - Status acknowledgments (e.g. *"thik chal raha hai"* -> acknowledges before topic change).
+     - Conversational bridges for short affirmations (*"okay"*, *"hmm"*).
+     - Persona inquiries (profession, current activity, Indiranagar lifestyle, indie music).
+     - Natural, open-ended conversational fallbacks.
+2. **Pluggable Remote LLM Adapter (`LLMAdapterFactory`)**:
+   - Configurable via `.env`:
+     - `LLM_PROVIDER=mock` (default offline ₹0 mode)
+     - `LLM_PROVIDER=groq` (`GROQ_API_KEY`, `GROQ_MODEL=llama-3.3-70b-versatile` — free cloud tier)
+     - `LLM_PROVIDER=gemini` (`GEMINI_API_KEY`, `GEMINI_MODEL=gemini-1.5-flash` — free cloud tier)
+     - `LLM_PROVIDER=openai` or `ollama` (`OPENAI_API_KEY`, `OPENAI_API_BASE=http://localhost:11434/v1`)
+   - Uses zero-dependency async HTTP calls via `httpx`.
+   - **Resilient Fallback**: If remote LLM returns an error, rate limit (429), or network timeout, it automatically and silently falls back to the intelligent contextual engine.
+   - **Safety Invariant**: Plain-code crisis screening always executes with 0ms delay *before* any model/adapter invocation.
 
 ## Recommended order
 

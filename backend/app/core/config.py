@@ -22,6 +22,16 @@ class Settings(BaseSettings):
     INACTIVITY_EXPIRY_DAYS: int = 15
     INACTIVITY_REMINDER_DAYS: int = 12
 
+    # LLM Settings (Option 3: Hybrid Architecture)
+    LLM_PROVIDER: str = "mock"  # "mock", "groq", "gemini", "openai"
+    GROQ_API_KEY: Union[str, None] = None
+    GROQ_MODEL: str = "llama-3.3-70b-versatile"
+    GEMINI_API_KEY: Union[str, None] = None
+    GEMINI_MODEL: str = "gemini-1.5-flash"
+    OPENAI_API_KEY: Union[str, None] = None
+    OPENAI_API_BASE: Union[str, None] = None
+    OPENAI_MODEL: str = "gpt-4o-mini"
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
