@@ -31,3 +31,16 @@ async def test_frontend_pwa_files_served(client):
     res_app = await client.get("/js/app.js")
     assert res_app.status_code == 200
     assert "resetSessionToOnboarding" in res_app.text
+
+    # Test PWA Icons
+    res_icon_192 = await client.get("/icons/icon-192.png")
+    assert res_icon_192.status_code == 200
+    assert res_icon_192.headers.get("content-type") == "image/png"
+
+    res_icon_512 = await client.get("/icons/icon-512.png")
+    assert res_icon_512.status_code == 200
+    assert res_icon_512.headers.get("content-type") == "image/png"
+
+    # Test root manifest
+    res_root_manifest = await client.get("/manifest.json")
+    assert res_root_manifest.status_code == 200

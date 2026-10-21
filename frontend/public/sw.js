@@ -1,11 +1,15 @@
-const CACHE_NAME = "aanya-companion-v9-shell";
+const CACHE_NAME = "aanya-companion-v10-shell";
 const ASSETS_TO_CACHE = [
   "/",
   "/index.html",
   "/css/app.css",
   "/js/app.js",
   "/js/api.js",
-  "/public/manifest.json"
+  "/public/manifest.json",
+  "/icons/icon-192.png",
+  "/icons/icon-512.png",
+  "/icons/icon-maskable-512.png",
+  "/icons/apple-touch-icon.png"
 ];
 
 self.addEventListener("install", (event) => {

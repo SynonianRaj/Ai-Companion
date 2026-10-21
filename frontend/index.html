@@ -2,15 +2,20 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content">
   <title>Aanya — AI Companion</title>
   
-  <!-- PWA Meta Tags -->
-  <link rel="manifest" href="./public/manifest.json">
+  <!-- PWA & Mobile Meta Tags -->
+  <link rel="manifest" href="/public/manifest.json">
   <meta name="theme-color" content="#6366f1">
+  <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <link rel="stylesheet" href="./css/app.css?v=9.2">
+  <meta name="apple-mobile-web-app-title" content="Aanya">
+  <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+  <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png">
+  <link rel="icon" type="image/png" sizes="512x512" href="/icons/icon-512.png">
+  <link rel="stylesheet" href="./css/app.css?v=9.3">
 </head>
 <body>
 
@@ -31,6 +36,7 @@
         </div>
       </div>
       <div class="header-actions">
+        <button id="install-pwa-btn" class="btn-install-pwa" style="display: none;" title="Install App">📲 Install</button>
         <button id="skip-wait-btn" class="btn-skip-wait" style="display: none;" title="Skip waiting for reply">⚡ Skip wait</button>
         <button id="dev-clock-btn" class="btn-icon" title="Test Clock (Time Travel)">⏱️</button>
         <button id="settings-btn" class="btn-icon" title="Settings & Memory">⚙️</button>
@@ -171,6 +177,6 @@
 
   </div>
 
-  <script type="module" src="./js/app.js?v=9.2"></script>
+  <script type="module" src="./js/app.js?v=9.3"></script>
 </body>
 </html>

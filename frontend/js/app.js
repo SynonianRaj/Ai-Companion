@@ -1,4 +1,4 @@
-import { api } from "./api.js?v=9.2";
+import { api } from "./api.js?v=9.3";
 
 // Check if running directly as local file
 if (window.location.protocol === "file:") {
@@ -22,7 +22,7 @@ const state = {
 // Register Service Worker
 if ("serviceWorker" in navigator && window.location.protocol.startsWith("http")) {
   window.addEventListener("load", () => {
-    navigator.serviceWorker.register("./public/sw.js?v=9.2").catch((err) => {
+    navigator.serviceWorker.register("./public/sw.js?v=10.0").catch((err) => {
       console.log("ServiceWorker registration failed: ", err);
     });
   });
@@ -35,8 +35,79 @@ const sendBtn = document.getElementById("send-btn");
 const settingsBtn = document.getElementById("settings-btn");
 const devClockBtn = document.getElementById("dev-clock-btn");
 const skipWaitBtn = document.getElementById("skip-wait-btn");
+const installPwaBtn = document.getElementById("install-pwa-btn");
 const noticeBanner = document.getElementById("notice-banner");
 const personaStatusText = document.getElementById("persona-status-text");
+
+// PWA Install Handling
+let deferredInstallPrompt = null;
+window.addEventListener("beforeinstallprompt", (e) => {
+  e.preventDefault();
+  deferredInstallPrompt = e;
+  if (installPwaBtn) {
+    installPwaBtn.style.display = "inline-flex";
+  }
+});
+
+if (installPwaBtn) {
+  // Check if already in standalone display mode
+  const isStandalone = window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone === true;
+  if (!isStandalone) {
+    // Show install button for mobile devices by default
+    const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+    if (isMobile) {
+      installPwaBtn.style.display = "inline-flex";
+    }
+  }
+
+  installPwaBtn.addEventListener("click", async () => {
+    if (deferredInstallPrompt) {
+      deferredInstallPrompt.prompt();
+      const { outcome } = await deferredInstallPrompt.userChoice;
+      if (outcome === "accepted") {
+        installPwaBtn.style.display = "none";
+      }
+      deferredInstallPrompt = null;
+    } else {
+      const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+      if (isIOS) {
+        alert("To install Aanya on your iPhone:\n1. Tap the Share button (⎋ box with arrow) at the bottom of Safari.\n2. Scroll down and tap 'Add to Home Screen' (⊞).");
+      } else {
+        alert("To install Aanya:\nTap your browser's menu (three dots ⋮) at the top right and tap 'Install app' or 'Add to Home screen'.");
+      }
+    }
+  });
+}
+
+window.addEventListener("appinstalled", () => {
+  deferredInstallPrompt = null;
+  if (installPwaBtn) {
+    installPwaBtn.style.display = "none";
+  }
+});
+
+// Mobile Dynamic Viewport & Virtual Keyboard Handler
+if (window.visualViewport) {
+  const onViewportResize = () => {
+    const container = document.getElementById("app-container");
+    if (container && window.innerWidth <= 600) {
+      container.style.height = `${window.visualViewport.height}px`;
+      if (chatFeed) {
+        chatFeed.scrollTop = chatFeed.scrollHeight;
+      }
+    }
+  };
+  window.visualViewport.addEventListener("resize", onViewportResize);
+  window.visualViewport.addEventListener("scroll", onViewportResize);
+}
+
+if (chatInput) {
+  chatInput.addEventListener("focus", () => {
+    setTimeout(() => {
+      if (chatFeed) chatFeed.scrollTop = chatFeed.scrollHeight;
+    }, 300);
+  });
+}
 
 // Modals
 const onboardingModal = document.getElementById("onboarding-modal");
