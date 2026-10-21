@@ -12,16 +12,38 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from backend.app.core.config import settings
+import asyncio
+import logging
 from backend.app.db.session import init_db
 from backend.app.api.routes import router as api_router
+from backend.app.services.scheduler_service import scheduler_service
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup: ensure tables and seed Persona 1
     await init_db()
-    yield
-    # Shutdown logic if any
+    
+    # Lightweight internal background worker for spontaneous messaging & quiet-hour rescheduling
+    async def periodic_scheduler_worker():
+        while True:
+            try:
+                await asyncio.sleep(120)  # Check every 2 minutes
+                ready_items, quiet_count = await scheduler_service.claim_pending_spontaneous_relationships()
+                if ready_items:
+                    await scheduler_service.dispatch_claimed_messages(ready_items)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Internal scheduler loop error: {e}")
+
+    worker_task = asyncio.create_task(periodic_scheduler_worker())
+    try:
+        yield
+    finally:
+        worker_task.cancel()
 
 
 app = FastAPI(
