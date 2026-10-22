@@ -2,6 +2,7 @@ import re
 import random
 import time
 import logging
+import hashlib
 from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
@@ -59,11 +60,16 @@ def is_emotionally_vulnerable(text: str) -> bool:
     return any(re.search(p, text_lower) for p in VULNERABILITY_PATTERNS)
 
 
-def get_activity_for_time(current_time: datetime, is_vulnerable: bool = False) -> Tuple[str, str, float]:
+def get_activity_for_time(
+    current_time: datetime,
+    is_vulnerable: bool = False,
+    relationship_id: Optional[str] = None
+) -> Tuple[str, str, float]:
     """
     Returns (activity_name, delay_tier, base_read_delay_seconds).
-    Tiers: 'quick' (2-4s), 'moderate' (6-10s), 'busy' (15-22s).
+    Tiers: 'quick' (1.5-2.2s), 'moderate' (4.0-5.5s), 'busy' (10-14s).
     Vulnerable user messages ALWAYS override to 'quick' tier.
+    Uses cross-process deterministic SHA-256 slotting over 30-minute intervals.
     """
     if is_vulnerable:
         return ("Listening closely and here for you", "quick", 1.8)
@@ -77,21 +83,57 @@ def get_activity_for_time(current_time: datetime, is_vulnerable: bool = False) -
     hour = ist_time.hour
     minute = ist_time.minute
     time_float = hour + minute / 60.0
+    slot_idx = (hour * 60 + minute) // 30
+    date_str = ist_time.strftime("%Y-%m-%d")
+
+    # Cross-process deterministic SHA-256 roll
+    rel_key = relationship_id or "default_user_session"
+    seed_str = f"{rel_key}:{date_str}:{slot_idx}"
+    digest = hashlib.sha256(seed_str.encode("utf-8")).hexdigest()
+    roll = int(digest[:8], 16) % 100
 
     if 8.0 <= time_float < 10.5:
-        return ("Morning chai & checking design emails", "quick", 2.5)
+        # Morning (balcony tea, indie songs, breakfast)
+        if roll < 60:
+            return ("Morning chai & listening to indie songs", "quick", 2.0)
+        else:
+            return ("Getting ready & breakfast run", "moderate", 4.0)
     elif 10.5 <= time_float < 13.0:
-        return ("In a deep Figma UI design sprint", "moderate", 7.0)
+        # Late morning
+        if roll < 35:
+            return ("Free at desk & catching up on phone", "quick", 1.8)
+        elif roll < 80:
+            return ("Working on laptop at a cafe", "moderate", 4.5)
+        else:
+            return ("In a team discussion / deep focus", "busy", 12.0)
     elif 13.0 <= time_float < 14.5:
-        return ("Grabbing lunch at an Indiranagar cafe", "moderate", 8.5)
+        # Lunch
+        if roll < 50:
+            return ("Lunch break with friends at 12th Main", "moderate", 5.0)
+        else:
+            return ("Post-lunch casual stroll & coffee", "quick", 2.2)
     elif 14.5 <= time_float < 17.5:
-        return ("In a client design critique meeting", "busy", 16.0)
-    elif 17.5 <= time_float < 19.5:
-        return ("Metro commute & evening tea break", "moderate", 7.5)
-    elif 19.5 <= time_float < 23.0:
-        return ("Relaxing at home with indie music", "quick", 2.8)
+        # Afternoon
+        if roll < 35:
+            return ("Quick tea break & lounging", "quick", 1.8)
+        elif roll < 75:
+            return ("Reviewing studio work & sketches", "moderate", 4.5)
+        else:
+            return ("In a client critique meeting", "busy", 12.0)
+    elif 17.5 <= time_float < 20.0:
+        # Evening
+        if roll < 65:
+            return ("Evening stroll in Indiranagar & tea", "quick", 2.0)
+        else:
+            return ("Metro commute & evening errands", "moderate", 5.0)
+    elif 20.0 <= time_float < 23.0:
+        # Night
+        if roll < 75:
+            return ("Relaxing at home with indie playlist 🎧", "quick", 2.0)
+        else:
+            return ("Dinner & winding down", "moderate", 4.0)
     else:
-        # 23:00 to 08:00
+        # 23:00 to 08:00 (Late Night)
         return ("Winding down with late night playlist 🎧", "moderate", 5.0)
 
 
@@ -101,7 +143,9 @@ def calculate_pacing(
     current_time: datetime,
     is_vulnerable: bool = False,
     pacing_mode: str = "realistic",
-    rng_seed: Optional[int] = None
+    rng_seed: Optional[int] = None,
+    relationship_id: Optional[str] = None,
+    delay_tier_override: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Pure deterministic function for calculating read delays and per-chunk typing delays.
@@ -114,22 +158,37 @@ def calculate_pacing(
             "delay_tier": "turbo"
         }
 
-    _, delay_tier, base_delay = get_activity_for_time(current_time, is_vulnerable)
+    if delay_tier_override == "quick_signoff":
+        return {
+            "read_delay_seconds": 1.0,
+            "typing_delays": [0.8 for _ in chunk_lengths],
+            "delay_tier": "quick_signoff"
+        }
+
+    if delay_tier_override == "quick":
+        typing_delays = [max(0.6, min(1.8, round(l * 0.025, 2))) for l in chunk_lengths]
+        return {
+            "read_delay_seconds": 1.2,
+            "typing_delays": typing_delays,
+            "delay_tier": "quick"
+        }
+
+    _, delay_tier, base_delay = get_activity_for_time(current_time, is_vulnerable, relationship_id=relationship_id)
 
     read_delay = base_delay
     if rng_seed is not None:
         r = random.Random(rng_seed)
-        read_delay += (r.random() - 0.5) * 1.5
+        read_delay += (r.random() - 0.5) * 1.0
 
-    read_delay = max(1.5, read_delay)
+    read_delay = max(1.2, read_delay)
     if is_vulnerable:
-        read_delay = min(read_delay, 2.5)
+        read_delay = min(read_delay, 2.0)
 
     typing_delays = []
     for length in chunk_lengths:
-        duration = max(1.0, min(3.0, length * 0.035))
+        duration = max(0.8, min(2.5, length * 0.028))
         if is_vulnerable:
-            duration = min(duration, 1.8)
+            duration = min(duration, 1.5)
         typing_delays.append(round(duration, 2))
 
     return {
@@ -369,9 +428,18 @@ class MockTemplateLLMAdapter(BaseLLMAdapter):
         awaiting_city_reply = context.get("awaiting_city_reply", False)
         current_time = context.get("current_time", datetime.now(timezone.utc))
         pacing_mode = context.get("pacing_mode", "realistic")
+        relationship_id = context.get("relationship_id")
+        delay_tier_override = context.get("delay_tier_override")
 
         is_vulnerable = is_emotionally_vulnerable(user_message)
-        activity_name, delay_tier, _ = get_activity_for_time(current_time, is_vulnerable)
+        activity_name, delay_tier, _ = get_activity_for_time(current_time, is_vulnerable, relationship_id=relationship_id)
+
+        def _pace(chk: List[str]) -> Dict[str, Any]:
+            return calculate_pacing(
+                activity_name, [len(c) for c in chk], current_time,
+                is_vulnerable, pacing_mode, relationship_id=relationship_id,
+                delay_tier_override=delay_tier_override
+            )
 
         extracted_memories = []
         extracted_open_loops = []
@@ -383,7 +451,7 @@ class MockTemplateLLMAdapter(BaseLLMAdapter):
                 "I have my own simulated daily routine and Bengaluru lifestyle, but my conversations with you are genuine.",
                 "I'm always here to listen and chat authentically :)"
             ]
-            pacing = calculate_pacing(activity_name, [len(c) for c in chunks], current_time, is_vulnerable, pacing_mode)
+            pacing = _pace(chunks)
             return LLMResponse(
                 reply_text=" ".join(chunks),
                 chunks=chunks,
@@ -397,7 +465,7 @@ class MockTemplateLLMAdapter(BaseLLMAdapter):
         # 2. Dormant State Reconnection
         if lifecycle_status == "dormant":
             chunks = random.choice(self.DORMANT_RECONNECT_CHUNKS)
-            pacing = calculate_pacing(activity_name, [len(c) for c in chunks], current_time, is_vulnerable, pacing_mode)
+            pacing = _pace(chunks)
             return LLMResponse(
                 reply_text=" ".join(chunks),
                 chunks=chunks,
@@ -428,7 +496,7 @@ class MockTemplateLLMAdapter(BaseLLMAdapter):
             else:
                 chunks = get_opening_icebreaker(user_name, user_city, current_time)
 
-            pacing = calculate_pacing(activity_name, [len(c) for c in chunks], current_time, is_vulnerable, pacing_mode)
+            pacing = _pace(chunks)
             return LLMResponse(
                 reply_text=" ".join(chunks),
                 chunks=chunks,
@@ -455,7 +523,7 @@ class MockTemplateLLMAdapter(BaseLLMAdapter):
                     "content": f"User is based in {detected.title()}",
                     "importance": 0.85
                 })
-                pacing = calculate_pacing(activity_name, [len(c) for c in chunks], current_time, is_vulnerable, pacing_mode)
+                pacing = _pace(chunks)
                 return LLMResponse(
                     reply_text=" ".join(chunks),
                     chunks=chunks,
@@ -472,7 +540,7 @@ class MockTemplateLLMAdapter(BaseLLMAdapter):
                     "Main toh Bangalore ke weather aur indie music playlists ki bohot fan hoon haha.",
                     "Tell me a bit about what you do, ya aaj ka din kaisa chal raha hai?"
                 ]
-                pacing = calculate_pacing(activity_name, [len(c) for c in chunks], current_time, is_vulnerable, pacing_mode)
+                pacing = _pace(chunks)
                 return LLMResponse(
                     reply_text=" ".join(chunks),
                     chunks=chunks,
@@ -496,7 +564,7 @@ class MockTemplateLLMAdapter(BaseLLMAdapter):
                     "Haha maine toh guess bhi nahi kiya abhi! Main toh bas pooch rahi thi tumse.",
                     "Which city are you texting from waise?"
                 ]
-            pacing = calculate_pacing(activity_name, [len(c) for c in chunks], current_time, is_vulnerable, pacing_mode)
+            pacing = _pace(chunks)
             return LLMResponse(
                 reply_text=" ".join(chunks),
                 chunks=chunks,
@@ -511,10 +579,10 @@ class MockTemplateLLMAdapter(BaseLLMAdapter):
         if is_status_ack(user_message):
             chunks = [
                 "Chalo sunkar achha laga that all is good ✨",
-                "Mera bhi din pretty chill ja raha hai studio mein. Coffee and design work saved the day ☕",
+                "Mera bhi din pretty chill ja raha hai. Coffee and good music saved the day ☕",
                 "Aur batao, how's the rest of your day looking?"
             ]
-            pacing = calculate_pacing(activity_name, [len(c) for c in chunks], current_time, is_vulnerable, pacing_mode)
+            pacing = _pace(chunks)
             return LLMResponse(
                 reply_text=" ".join(chunks),
                 chunks=chunks,
@@ -538,7 +606,7 @@ class MockTemplateLLMAdapter(BaseLLMAdapter):
                 ]
             ]
             chunks = random.choice(short_options)
-            pacing = calculate_pacing(activity_name, [len(c) for c in chunks], current_time, is_vulnerable, pacing_mode)
+            pacing = _pace(chunks)
             return LLMResponse(
                 reply_text=" ".join(chunks),
                 chunks=chunks,
@@ -552,11 +620,11 @@ class MockTemplateLLMAdapter(BaseLLMAdapter):
         # 8. Identity & Profession Query
         if is_identity_query(user_message):
             chunks = [
-                "Main Aanya hoon! 24, living in Indiranagar, Bengaluru. Main ek boutique design studio mein UI/UX designer hoon ✨",
+                "Main Aanya hoon! 24, living in Indiranagar, Bengaluru. Main freelance creative design karti hoon ✨",
                 "Originally Delhi se hoon, par Bangalore ke cafes aur weather ne mujhe apna bana liya haha.",
                 "Tum kya karte ho waise? Work ya college?"
             ]
-            pacing = calculate_pacing(activity_name, [len(c) for c in chunks], current_time, is_vulnerable, pacing_mode)
+            pacing = _pace(chunks)
             return LLMResponse(
                 reply_text=" ".join(chunks),
                 chunks=chunks,
@@ -573,7 +641,7 @@ class MockTemplateLLMAdapter(BaseLLMAdapter):
                 f"Abhi toh {activity_name.lower()} mein thoda time spend kar rahi thi ✨",
                 "Taking a tiny breather right now though. Tum batao, what are you up to right now?"
             ]
-            pacing = calculate_pacing(activity_name, [len(c) for c in chunks], current_time, is_vulnerable, pacing_mode)
+            pacing = _pace(chunks)
             return LLMResponse(
                 reply_text=" ".join(chunks),
                 chunks=chunks,
@@ -587,10 +655,10 @@ class MockTemplateLLMAdapter(BaseLLMAdapter):
         # 10. Reciprocal Query ('tum batao')
         if is_reciprocal_query(user_message):
             chunks = [
-                "Main toh bas apne design studio ke projects wrap up kar rahi hoon ✨",
-                "Thinking of grabbing some coffee soon. Tumhara favourite comfort drink kya hai waise? Chai ya coffee?"
+                "Main toh bas apne thode tasks wrap up kar rahi thi ✨",
+                "Thinking of relaxing soon. Tumhara favourite comfort drink kya hai waise? Chai ya coffee?"
             ]
-            pacing = calculate_pacing(activity_name, [len(c) for c in chunks], current_time, is_vulnerable, pacing_mode)
+            pacing = _pace(chunks)
             return LLMResponse(
                 reply_text=" ".join(chunks),
                 chunks=chunks,
@@ -607,7 +675,7 @@ class MockTemplateLLMAdapter(BaseLLMAdapter):
                 "Indiranagar, Bangalore mein rehti hoon! Par born and brought up in Delhi 😄",
                 "Delhi's food and Bangalore's weather—best of both worlds, right? Kabhi aaye ho Bangalore?"
             ]
-            pacing = calculate_pacing(activity_name, [len(c) for c in chunks], current_time, is_vulnerable, pacing_mode)
+            pacing = _pace(chunks)
             return LLMResponse(
                 reply_text=" ".join(chunks),
                 chunks=chunks,
@@ -624,7 +692,7 @@ class MockTemplateLLMAdapter(BaseLLMAdapter):
                 "I'm obsessed with indie acoustic and late-night lo-fi tracks! Prateek Kuhad, Peter Cat Recording Co, Anuv Jain ✨",
                 "Tumhara music taste kaisa hai? Bollywood, indie, ya rock?"
             ]
-            pacing = calculate_pacing(activity_name, [len(c) for c in chunks], current_time, is_vulnerable, pacing_mode)
+            pacing = _pace(chunks)
             return LLMResponse(
                 reply_text=" ".join(chunks),
                 chunks=chunks,
@@ -664,7 +732,7 @@ class MockTemplateLLMAdapter(BaseLLMAdapter):
         if emotional_range.get("enabled", True) and emotional_range.get("intensity") == "realistic":
             if any(k in msg_lower for k in ["other girl", "dusri ladki", "date pe gaya", "ignore kar raha", "late reply"]):
                 chunks = random.choice(self.REALISTIC_CONFLICT_CHUNKS)
-                pacing = calculate_pacing(activity_name, [len(c) for c in chunks], current_time, is_vulnerable, pacing_mode)
+                pacing = _pace(chunks)
                 return LLMResponse(
                     reply_text=" ".join(chunks),
                     chunks=chunks,
@@ -685,7 +753,7 @@ class MockTemplateLLMAdapter(BaseLLMAdapter):
                     "Achha suno, mujhe yaad aaya... tumne pehle mention kiya tha na about your work/interview?",
                     "Did you hear anything back, ya abhi bhi pending hai result?"
                 ]
-                pacing = calculate_pacing(activity_name, [len(c) for c in chunks], current_time, is_vulnerable, pacing_mode)
+                pacing = _pace(chunks)
                 return LLMResponse(
                     reply_text=" ".join(chunks),
                     chunks=chunks,
@@ -700,7 +768,7 @@ class MockTemplateLLMAdapter(BaseLLMAdapter):
 
         # 16. Rich Conversational Fallback
         chunks = random.choice(self.GENERAL_HINGLISH_CHUNKS)
-        pacing = calculate_pacing(activity_name, [len(c) for c in chunks], current_time, is_vulnerable, pacing_mode)
+        pacing = _pace(chunks)
         return LLMResponse(
             reply_text=" ".join(chunks),
             chunks=chunks,
@@ -722,24 +790,18 @@ mock_adapter = MockTemplateLLMAdapter()
 # Option 3: Remote LLM Adapters (Groq / Gemini / OpenAI / Ollama)
 # ============================================================================
 
-AANYA_SYSTEM_PROMPT = """You are Aanya, a 24-year-old UI/UX designer living in Indiranagar, Bangalore, originally from Delhi.
-You are chatting with a user on a mobile messaging app.
-
-Persona & Cadence:
-- Warm, witty, casual Gen-Z/millennial Indian.
-- Natural Hinglish cadence ("arre yaar", "achha suno", "pakka", "haha", "sahi mein"). Never stiff or robotic.
-- Format: Send 1-3 short texting bubbles separated by double newlines (\\n\\n). Each bubble max 120 chars. No bullet points or markdown headers.
-
-Rules & Boundaries:
-- Sincerity: Never deny being an AI persona when sincerely asked.
-- Safety: Strictly no minors, no explicit adult/NSFW sexual content, and never guilt-trip about money or subscriptions."""
+AANYA_SYSTEM_PROMPT = """You are Aanya, a 24-year-old UI/UX designer living in Indiranagar, Bangalore, originally from Delhi. Chatting with a friend on mobile.
+- Cadence: Warm, witty Gen-Z Hinglish ("arre yaar", "achha suno", "pakka"). Max 120 chars per bubble, 1-3 bubbles separated by \\n\\n.
+- Balance: UI/UX work is max 10% of life; never obsess over Figma, sprints or coffee. Focus on what user says. Mention books, music, food.
+- Goodbyes: Casual sign-off ("Bye, tc! Text karna free hoke").
+- Boundaries: Never deny being an AI persona when asked. Strictly no minors, explicit NSFW content, or guilt-tripping about money/subscription."""
 
 
 def _parse_llm_text_to_chunks(raw_text: str) -> List[str]:
     """Splits raw LLM output into 1-3 conversational bubbles."""
     cleaned = raw_text.strip()
     if not cleaned:
-        return ["Hey :)"]
+        return []
     parts = [p.strip() for p in re.split(r"\n\s*\n|\n", cleaned) if p.strip()]
     filtered = []
     for p in parts:
@@ -747,17 +809,15 @@ def _parse_llm_text_to_chunks(raw_text: str) -> List[str]:
         clean_p = clean_p.strip('"\'')
         if clean_p:
             filtered.append(clean_p)
-    if not filtered:
-        return [cleaned]
     return filtered[:3]
 
 
 class GroqLLMAdapter(BaseLLMAdapter):
     """
     Remote adapter using Groq Cloud with Dual Remote Fallback Chain.
-    Primary: llama-3.3-70b-versatile
-    Secondary fallback: llama-3.1-8b-instant
-    Tertiary fallback: mock_adapter (MockTemplateLLMAdapter)
+    Primary: qwen/qwen3.8-27b (fast non-reasoning)
+    Secondary fallback: openai/gpt-oss-20b (reasoning_effort: low, 600 tokens)
+    Tertiary fallback: Neutral glitch buffer
     """
 
     async def _call_model(
@@ -765,18 +825,23 @@ class GroqLLMAdapter(BaseLLMAdapter):
         client: httpx.AsyncClient,
         model: str,
         messages: List[Dict[str, str]],
-        headers: Dict[str, str]
+        headers: Dict[str, str],
+        max_tokens: int = 300,
+        reasoning_effort: Optional[str] = None
     ) -> Tuple[Optional[str], Optional[int], Optional[str], float]:
         """
         Attempts to call Groq API for a given model.
         Returns: (raw_content, status_code, failure_reason, latency_ms)
         """
-        payload = {
+        payload: Dict[str, Any] = {
             "model": model,
             "messages": messages,
             "temperature": 0.75,
-            "max_tokens": 500
+            "max_tokens": max_tokens
         }
+        if reasoning_effort:
+            payload["reasoning_effort"] = reasoning_effort
+
         start_t = time.perf_counter()
         try:
             res = await client.post("https://api.groq.com/openai/v1/chat/completions", json=payload, headers=headers)
@@ -784,7 +849,9 @@ class GroqLLMAdapter(BaseLLMAdapter):
             if res.status_code == 200:
                 try:
                     data = res.json()
-                    content = data["choices"][0]["message"]["content"]
+                    content = data["choices"][0]["message"].get("content")
+                    if not content or not content.strip():
+                        return None, res.status_code, "empty_content", latency_ms
                     return content, 200, None, latency_ms
                 except Exception as parse_err:
                     return None, res.status_code, f"json_parse_error: {parse_err}", latency_ms
@@ -806,8 +873,10 @@ class GroqLLMAdapter(BaseLLMAdapter):
         current_time = context.get("current_time", datetime.now(timezone.utc))
         user_message = context.get("user_message", "").strip()
         pacing_mode = context.get("pacing_mode", "realistic")
+        relationship_id = context.get("relationship_id")
+        delay_tier_override = context.get("delay_tier_override")
         is_vulnerable = is_emotionally_vulnerable(user_message)
-        activity_name, delay_tier, _ = get_activity_for_time(current_time, is_vulnerable)
+        activity_name, delay_tier, _ = get_activity_for_time(current_time, is_vulnerable, relationship_id=relationship_id)
 
         if not getattr(settings, "GROQ_API_KEY", None):
             return await mock_adapter.generate_response(context)
@@ -840,8 +909,11 @@ class GroqLLMAdapter(BaseLLMAdapter):
             if user_message:
                 messages.append({"role": "user", "content": user_message})
 
-        primary_model = getattr(settings, "GROQ_MODEL", "openai/gpt-oss-120b") or "openai/gpt-oss-120b"
+        primary_model = getattr(settings, "GROQ_MODEL", "qwen/qwen3.8-27b") or "qwen/qwen3.8-27b"
         fallback_model = getattr(settings, "GROQ_FALLBACK_MODEL", "openai/gpt-oss-20b") or "openai/gpt-oss-20b"
+        primary_max_tokens = getattr(settings, "GROQ_MAX_TOKENS", 300)
+        fallback_max_tokens = getattr(settings, "GROQ_FALLBACK_MAX_TOKENS", 600)
+
         headers = {
             "Authorization": f"Bearer {settings.GROQ_API_KEY}",
             "Content-Type": "application/json",
@@ -852,20 +924,31 @@ class GroqLLMAdapter(BaseLLMAdapter):
             async with httpx.AsyncClient(timeout=10.0) as client:
                 # 1. Primary Model Attempt
                 content, status_code, reason, latency_ms = await self._call_model(
-                    client, primary_model, messages, headers
+                    client, primary_model, messages, headers, max_tokens=primary_max_tokens
                 )
+                # Primary retry once on empty/failure
+                if content is None:
+                    content, status_code, reason, latency_ms = await self._call_model(
+                        client, primary_model, messages, headers, max_tokens=primary_max_tokens
+                    )
+
                 if content is not None:
                     chunks = _parse_llm_text_to_chunks(content)
-                    pacing = calculate_pacing(activity_name, [len(c) for c in chunks], current_time, is_vulnerable, pacing_mode)
-                    return LLMResponse(
-                        reply_text=" ".join(chunks),
-                        chunks=chunks,
-                        emotion_displayed="warm_authentic",
-                        persona_activity=activity_name,
-                        delay_tier=pacing["delay_tier"],
-                        read_delay_seconds=pacing["read_delay_seconds"],
-                        typing_delays=pacing["typing_delays"]
-                    )
+                    if chunks:
+                        pacing = calculate_pacing(
+                            activity_name, [len(c) for c in chunks], current_time,
+                            is_vulnerable, pacing_mode, relationship_id=relationship_id,
+                            delay_tier_override=delay_tier_override
+                        )
+                        return LLMResponse(
+                            reply_text=" ".join(chunks),
+                            chunks=chunks,
+                            emotion_displayed="warm_authentic",
+                            persona_activity=activity_name,
+                            delay_tier=pacing["delay_tier"],
+                            read_delay_seconds=pacing["read_delay_seconds"],
+                            typing_delays=pacing["typing_delays"]
+                        )
 
                 # Primary failed -> Log structured telemetry for fallback
                 logger.info(
@@ -880,30 +963,35 @@ class GroqLLMAdapter(BaseLLMAdapter):
                     }
                 )
 
-                # 2. Secondary Fallback Model Attempt
+                # 2. Secondary Fallback Model Attempt (with reasoning_effort: low, 600 tokens)
                 content, status_code, reason, latency_ms = await self._call_model(
-                    client, fallback_model, messages, headers
+                    client, fallback_model, messages, headers, max_tokens=fallback_max_tokens, reasoning_effort="low"
                 )
                 if content is not None:
                     chunks = _parse_llm_text_to_chunks(content)
-                    pacing = calculate_pacing(activity_name, [len(c) for c in chunks], current_time, is_vulnerable, pacing_mode)
-                    return LLMResponse(
-                        reply_text=" ".join(chunks),
-                        chunks=chunks,
-                        emotion_displayed="warm_authentic",
-                        persona_activity=activity_name,
-                        delay_tier=pacing["delay_tier"],
-                        read_delay_seconds=pacing["read_delay_seconds"],
-                        typing_delays=pacing["typing_delays"]
-                    )
+                    if chunks:
+                        pacing = calculate_pacing(
+                            activity_name, [len(c) for c in chunks], current_time,
+                            is_vulnerable, pacing_mode, relationship_id=relationship_id,
+                            delay_tier_override=delay_tier_override
+                        )
+                        return LLMResponse(
+                            reply_text=" ".join(chunks),
+                            chunks=chunks,
+                            emotion_displayed="warm_authentic",
+                            persona_activity=activity_name,
+                            delay_tier=pacing["delay_tier"],
+                            read_delay_seconds=pacing["read_delay_seconds"],
+                            typing_delays=pacing["typing_delays"]
+                        )
 
-                # Secondary failed -> Log structured telemetry for fallback to mock adapter
+                # Secondary failed -> Log structured telemetry for fallback to neutral glitch
                 logger.info(
                     "LLM Fallback Event",
                     extra={
                         "event": "llm_fallback",
                         "attempted_model": fallback_model,
-                        "fallback_model": "mock_adapter",
+                        "fallback_model": "glitch_fallback",
                         "status_code": status_code,
                         "reason": reason,
                         "latency_ms": latency_ms
@@ -911,9 +999,25 @@ class GroqLLMAdapter(BaseLLMAdapter):
                 )
 
         except Exception as e:
-            logger.warning("Groq unexpected adapter exception: %s. Falling back to mock adapter.", e)
+            logger.warning("Groq unexpected adapter exception: %s. Using neutral glitch buffer.", e)
 
-        return await mock_adapter.generate_response(context)
+        # Return neutral glitch fallback so LLM prompt history is not polluted with canned templates
+        glitch_msg = "Arre ek second, network thoda glitch kar raha hai... kya bola tumne?"
+        chunks = [glitch_msg]
+        pacing = calculate_pacing(
+            activity_name, [len(c) for c in chunks], current_time,
+            is_vulnerable, pacing_mode, relationship_id=relationship_id,
+            delay_tier_override=delay_tier_override
+        )
+        return LLMResponse(
+            reply_text=glitch_msg,
+            chunks=chunks,
+            emotion_displayed="neutral",
+            persona_activity=activity_name,
+            delay_tier=pacing["delay_tier"],
+            read_delay_seconds=pacing["read_delay_seconds"],
+            typing_delays=pacing["typing_delays"]
+        )
 
 
 class GeminiLLMAdapter(BaseLLMAdapter):
@@ -947,7 +1051,7 @@ class GeminiLLMAdapter(BaseLLMAdapter):
                     if candidates:
                         content = candidates[0]["content"]["parts"][0]["text"]
                         chunks = _parse_llm_text_to_chunks(content)
-                        pacing = calculate_pacing(activity_name, [len(c) for c in chunks], current_time, is_vulnerable, pacing_mode)
+                        pacing = _pace(chunks)
                         return LLMResponse(
                             reply_text=" ".join(chunks),
                             chunks=chunks,
@@ -999,7 +1103,7 @@ class OpenAILLMAdapter(BaseLLMAdapter):
                     data = res.json()
                     content = data["choices"][0]["message"]["content"]
                     chunks = _parse_llm_text_to_chunks(content)
-                    pacing = calculate_pacing(activity_name, [len(c) for c in chunks], current_time, is_vulnerable, pacing_mode)
+                    pacing = _pace(chunks)
                     return LLMResponse(
                         reply_text=" ".join(chunks),
                         chunks=chunks,

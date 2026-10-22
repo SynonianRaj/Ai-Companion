@@ -26,9 +26,11 @@ class ClockService:
 
     @classmethod
     def set_time(cls, dt: datetime) -> None:
-        """Sets a fixed base time."""
+        """Sets a fixed base time in UTC."""
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
+        else:
+            dt = dt.astimezone(timezone.utc)
         cls._frozen_time = dt
         cls._offset = timedelta(0)
 

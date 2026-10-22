@@ -84,6 +84,10 @@ class RelationshipState(Base):
     next_spontaneous_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     last_spontaneous_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     spontaneous_opt_in: Mapped[bool] = mapped_column(Boolean, default=True)
+    spontaneous_paused: Mapped[bool] = mapped_column(Boolean, default=False)
+    spontaneous_daily_count: Mapped[int] = mapped_column(Integer, default=0)
+    spontaneous_daily_reset_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    unreplied_spontaneous_count: Mapped[int] = mapped_column(Integer, default=0)
     expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     lifecycle_status: Mapped[str] = mapped_column(String(50), default="active")  # active, dormant, expired, deleted
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

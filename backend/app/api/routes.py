@@ -118,12 +118,16 @@ async def register_user(
     session.add(entitlement)
 
     # Create initial Relationship with Persona 1 (Aanya)
+    import random
+    from datetime import timedelta
+    init_spontaneous = now + timedelta(hours=random.uniform(3.0, 5.0))
     rel = RelationshipState(
         user_id=user.id,
         persona_id="aanya_v1",
         relationship_stage="encounter",
         emotional_range_setting={"enabled": True, "intensity": "realistic"},
         last_user_initiated_interaction_at=now,
+        next_spontaneous_at=init_spontaneous,
         lifecycle_status="active",
         updated_at=now
     )
@@ -230,7 +234,8 @@ async def send_chat_message(
         persona_activity=result.get("persona_activity"),
         delay_tier=result.get("delay_tier", "quick"),
         read_delay_seconds=result.get("read_delay_seconds", 0.0),
-        seen_at=result.get("seen_at")
+        seen_at=result.get("seen_at"),
+        show_skip_wait=result.get("show_skip_wait", False)
     )
 
 
@@ -292,7 +297,11 @@ async def get_chat_history(
     next_deliver_at = pending_messages[0].deliver_at if pending_messages else None
     pending_delivery = len(pending_messages) > 0
 
-    activity_name, _, _ = get_activity_for_time(now)
+    activity_name, _, _ = get_activity_for_time(now, relationship_id=relationship_id)
+    show_skip_wait = False
+    if pending_delivery and next_deliver_at:
+        wait_seconds = (to_utc(next_deliver_at) - now).total_seconds()
+        show_skip_wait = wait_seconds >= 5.0
 
     return ChatHistoryResponse(
         messages=[
@@ -311,7 +320,8 @@ async def get_chat_history(
         ],
         pending_delivery=pending_delivery,
         next_deliver_at=next_deliver_at,
-        persona_activity=activity_name
+        persona_activity=activity_name,
+        show_skip_wait=show_skip_wait
     )
 
 

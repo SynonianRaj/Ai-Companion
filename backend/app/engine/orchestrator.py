@@ -1,4 +1,7 @@
 import asyncio
+import re
+import json
+import httpx
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, Optional, List
 from sqlalchemy import select, and_, update
@@ -7,7 +10,7 @@ from sqlalchemy.orm.attributes import flag_modified
 
 from backend.app.core.config import settings
 from backend.app.db.models import (
-    User, RelationshipState, Conversation, Message, SafetyEvent
+    User, RelationshipState, Conversation, Message, SafetyEvent, OpenLoop
 )
 from backend.app.db.session import to_utc
 from backend.app.safety.crisis_detector import crisis_detector
@@ -341,6 +344,41 @@ class Orchestrator:
             # Step 3: Reset Inactivity Clock (User-authored message)
             await lifecycle_service.record_user_interaction(session, relationship)
 
+            # Close any existing open loops since the user texted first
+            close_stmt = (
+                update(OpenLoop)
+                .where(
+                    and_(
+                        OpenLoop.relationship_id == relationship.id,
+                        OpenLoop.status == "open"
+                    )
+                )
+                .values(status="resolved", last_relevant_at=now)
+            )
+            await session.execute(close_stmt)
+
+            # Reset unreplied counter and unpause spontaneous reachouts
+            relationship.unreplied_spontaneous_count = 0
+            relationship.spontaneous_paused = False
+
+            # Active flow & precise sign-off detection
+            last_msg_stmt = (
+                select(Message)
+                .where(Message.relationship_id == relationship.id)
+                .order_by(Message.created_at.desc())
+                .limit(1)
+            )
+            last_msg = (await session.execute(last_msg_stmt)).scalar_one_or_none()
+            last_msg_delta = (now - to_utc(last_msg.created_at)).total_seconds() if last_msg and last_msg.created_at else 999999.0
+
+            SIGNOFF_PATTERN = re.compile(
+                r"\b(chal bye|chalo bye|bye bye|bye yaar|bye tc|take care|see ya|cya|baad me milte|baad me baat karte|nikal rha hu|nikal raha hu|nikal gaya|nikal rhi hu)\b",
+                re.IGNORECASE
+            )
+            is_signoff = bool(SIGNOFF_PATTERN.search(combined_text))
+            in_active_flow = (last_msg_delta < 210) and not is_signoff
+            delay_tier_override = "quick_signoff" if is_signoff else ("quick" if in_active_flow else None)
+
             # Step 4: Soft-Cancel any pending assistant chunks from previous interrupted turn
             cancel_stmt = (
                 update(Message)
@@ -392,9 +430,11 @@ class Orchestrator:
                 .limit(8)
             )
             recent_msgs_raw = (await session.execute(recent_msgs_stmt)).scalars().all()
+            # Filter out glitch fallback messages so prompt history is never polluted
             recent_messages = [
                 {"role": m.role, "content": m.content}
                 for m in reversed(recent_msgs_raw)
+                if not (m.metadata_json or {}).get("is_glitch_fallback")
             ]
 
             # Database-backed rate limiting check for remote LLM
@@ -408,6 +448,8 @@ class Orchestrator:
 
             context = {
                 "user_message": combined_text,
+                "relationship_id": relationship.id,
+                "delay_tier_override": delay_tier_override,
                 "relationship_stage": relationship.relationship_stage,
                 "lifecycle_status": relationship.lifecycle_status,
                 "emotional_range": {"enabled": False, "intensity": "suppressed"} if is_ambiguous_distress else (
@@ -472,9 +514,11 @@ class Orchestrator:
                 cumulative_typing_offset += typing_dur
                 chunk_deliver_at = seen_at + timedelta(seconds=cumulative_typing_offset)
 
+                is_glitch = "network thoda glitch" in chunk_text
                 meta_json = {
                     "emotion": response.emotion_displayed,
-                    "typing_duration": typing_dur
+                    "typing_duration": typing_dur,
+                    "is_glitch_fallback": is_glitch
                 }
 
                 asst_rec = Message(
@@ -522,11 +566,33 @@ class Orchestrator:
                     topic=loop_topic
                 )
 
+            # Synchronous open-loop extraction & deduplication in same transaction
+            OPEN_LOOP_GATE = re.compile(
+                r"\b(pahunch|pahuch|pohoch|reach|call back|msg karta|text karta|baat karta|baat krta|aadhe ghante|ghante me)\b",
+                re.IGNORECASE
+            )
+            if OPEN_LOOP_GATE.search(combined_text):
+                await cls._extract_and_store_open_loop(
+                    session=session,
+                    relationship=relationship,
+                    user=user,
+                    text=combined_text,
+                    now=now
+                )
+
             if response.stage_transition and response.stage_transition != relationship.relationship_stage:
                 relationship.relationship_stage = response.stage_transition
                 relationship.updated_at = now
 
             await session.commit()
+
+            total_estimated_wait = read_delay + cumulative_typing_offset
+            show_skip_wait = (
+                not in_active_flow
+                and delay_tier_override != "quick_signoff"
+                and response.delay_tier == "busy"
+                and total_estimated_wait >= 5.0
+            )
 
             return {
                 "role": "assistant",
@@ -540,8 +606,121 @@ class Orchestrator:
                 "persona_activity": response.persona_activity,
                 "delay_tier": response.delay_tier,
                 "read_delay_seconds": read_delay,
-                "seen_at": seen_at
+                "seen_at": seen_at,
+                "show_skip_wait": show_skip_wait
             }
+
+    @classmethod
+    async def _extract_and_store_open_loop(
+        cls,
+        session: AsyncSession,
+        relationship: RelationshipState,
+        user: User,
+        text: str,
+        now: datetime
+    ) -> None:
+        """
+        Extracts departure/commute promises (clamped to 15-240 min)
+        and dedupes in-place into open_loops table.
+        """
+        expected_minutes = 80
+        topic = "arrival_checkin"
+        has_promise = False
+
+        # 1. Deterministic Regex Fallback
+        text_lower = text.lower()
+        if any(w in text_lower for w in ["office", "ofc"]):
+            has_promise = True
+            topic = "office_arrival"
+            expected_minutes = 80
+        elif any(w in text_lower for w in ["ghar", "home"]):
+            has_promise = True
+            topic = "home_arrival"
+            expected_minutes = 60
+        elif "aadhe ghante" in text_lower:
+            has_promise = True
+            topic = "short_errand"
+            expected_minutes = 35
+        elif any(w in text_lower for w in ["pahunch", "pahuch", "pohoch", "reach"]):
+            has_promise = True
+            topic = "general_arrival"
+            expected_minutes = 75
+
+        # 2. Try compact LLM extraction if Groq API is configured
+        if getattr(settings, "GROQ_API_KEY", None):
+            try:
+                prompt_messages = [
+                    {
+                        "role": "system",
+                        "content": (
+                            "Extract user departure commitment or promise. "
+                            "Output pure JSON only: {\"has_promise\": bool, \"topic\": str, \"expected_minutes\": int}. "
+                            "No other words."
+                        )
+                    },
+                    {"role": "user", "content": text}
+                ]
+                headers = {
+                    "Authorization": f"Bearer {settings.GROQ_API_KEY}",
+                    "Content-Type": "application/json"
+                }
+                payload = {
+                    "model": getattr(settings, "GROQ_MODEL", "qwen/qwen3.8-27b") or "qwen/qwen3.8-27b",
+                    "messages": prompt_messages,
+                    "max_tokens": 80,
+                    "temperature": 0.1
+                }
+                async with httpx.AsyncClient(timeout=4.0) as client:
+                    resp = await client.post("https://api.groq.com/openai/v1/chat/completions", json=payload, headers=headers)
+                    if resp.status_code == 200:
+                        raw_c = resp.json()["choices"][0]["message"].get("content", "")
+                        clean_json = raw_c.strip()
+                        if "{" in clean_json and "}" in clean_json:
+                            clean_json = clean_json[clean_json.find("{"):clean_json.rfind("}")+1]
+                            parsed = json.loads(clean_json)
+                            if parsed.get("has_promise"):
+                                has_promise = True
+                                topic = parsed.get("topic") or topic
+                                val_min = parsed.get("expected_minutes")
+                                if isinstance(val_min, (int, float)):
+                                    expected_minutes = int(val_min)
+            except Exception:
+                # Malformed JSON or timeout -> keep clamped default
+                pass
+
+        if not has_promise:
+            return
+
+        # Clamp expected_minutes between 15 and 240
+        clamped_minutes = max(15, min(240, expected_minutes))
+        review_time = now + timedelta(minutes=clamped_minutes)
+
+        # Dedupe check: update existing open loop if open, else create
+        stmt = (
+            select(OpenLoop)
+            .where(
+                and_(
+                    OpenLoop.relationship_id == relationship.id,
+                    OpenLoop.status == "open"
+                )
+            )
+        )
+        existing = (await session.execute(stmt)).scalars().first()
+        if existing:
+            existing.topic = topic
+            existing.next_review_at = review_time
+            existing.last_relevant_at = now
+        else:
+            new_loop = OpenLoop(
+                relationship_id=relationship.id,
+                user_id=user.id,
+                persona_id=relationship.persona_id,
+                topic=topic,
+                status="open",
+                last_relevant_at=now,
+                next_review_at=review_time
+            )
+            session.add(new_loop)
 
 
 orchestrator = Orchestrator()

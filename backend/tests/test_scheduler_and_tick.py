@@ -28,6 +28,9 @@ async def test_scheduler_claim_during_daytime(db_session):
         user_id=user.id,
         persona_id="aanya_v1",
         spontaneous_opt_in=True,
+        spontaneous_paused=False,
+        spontaneous_daily_count=0,
+        last_user_initiated_interaction_at=now - timedelta(hours=4),
         next_spontaneous_at=now - timedelta(minutes=10),
         lifecycle_status="active"
     )

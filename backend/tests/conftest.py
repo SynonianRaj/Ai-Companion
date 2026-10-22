@@ -44,6 +44,7 @@ app.dependency_overrides[get_db] = override_get_db
 @pytest_asyncio.fixture(autouse=True)
 async def setup_test_db():
     ClockService.reset()
+    await init_db()
     async with test_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         await conn.exec_driver_sql("PRAGMA foreign_keys = OFF")

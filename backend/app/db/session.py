@@ -109,6 +109,14 @@ async def init_db() -> None:
                 await conn.exec_driver_sql("ALTER TABLE relationship_state ADD COLUMN last_spontaneous_at DATETIME")
             if "spontaneous_opt_in" not in rel_cols:
                 await conn.exec_driver_sql("ALTER TABLE relationship_state ADD COLUMN spontaneous_opt_in BOOLEAN DEFAULT 1")
+            if "spontaneous_paused" not in rel_cols:
+                await conn.exec_driver_sql("ALTER TABLE relationship_state ADD COLUMN spontaneous_paused BOOLEAN DEFAULT 0")
+            if "spontaneous_daily_count" not in rel_cols:
+                await conn.exec_driver_sql("ALTER TABLE relationship_state ADD COLUMN spontaneous_daily_count INTEGER DEFAULT 0")
+            if "spontaneous_daily_reset_at" not in rel_cols:
+                await conn.exec_driver_sql("ALTER TABLE relationship_state ADD COLUMN spontaneous_daily_reset_at DATETIME")
+            if "unreplied_spontaneous_count" not in rel_cols:
+                await conn.exec_driver_sql("ALTER TABLE relationship_state ADD COLUMN unreplied_spontaneous_count INTEGER DEFAULT 0")
         else:
             # PostgreSQL
             await conn.exec_driver_sql("ALTER TABLE users ADD COLUMN IF NOT EXISTS city VARCHAR(100);")
@@ -120,6 +128,10 @@ async def init_db() -> None:
             await conn.exec_driver_sql("ALTER TABLE relationship_state ADD COLUMN IF NOT EXISTS next_spontaneous_at TIMESTAMP WITH TIME ZONE;")
             await conn.exec_driver_sql("ALTER TABLE relationship_state ADD COLUMN IF NOT EXISTS last_spontaneous_at TIMESTAMP WITH TIME ZONE;")
             await conn.exec_driver_sql("ALTER TABLE relationship_state ADD COLUMN IF NOT EXISTS spontaneous_opt_in BOOLEAN DEFAULT TRUE;")
+            await conn.exec_driver_sql("ALTER TABLE relationship_state ADD COLUMN IF NOT EXISTS spontaneous_paused BOOLEAN DEFAULT FALSE;")
+            await conn.exec_driver_sql("ALTER TABLE relationship_state ADD COLUMN IF NOT EXISTS spontaneous_daily_count INTEGER DEFAULT 0;")
+            await conn.exec_driver_sql("ALTER TABLE relationship_state ADD COLUMN IF NOT EXISTS spontaneous_daily_reset_at TIMESTAMP WITH TIME ZONE;")
+            await conn.exec_driver_sql("ALTER TABLE relationship_state ADD COLUMN IF NOT EXISTS unreplied_spontaneous_count INTEGER DEFAULT 0;")
 
         # Backfill deliver_at, seen_at, status, sequence_order for any legacy rows
         await conn.exec_driver_sql("UPDATE messages SET deliver_at = created_at WHERE deliver_at IS NULL")

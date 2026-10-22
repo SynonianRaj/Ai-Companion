@@ -55,6 +55,7 @@ class SendMessageResponse(BaseModel):
     delay_tier: Optional[str] = "quick"
     read_delay_seconds: float = 0.0
     seen_at: Optional[datetime] = None
+    show_skip_wait: bool = False
 
 
 class MessageHistoryItem(BaseModel):
@@ -73,6 +74,7 @@ class ChatHistoryResponse(BaseModel):
     messages: List[MessageHistoryItem]
     pending_delivery: bool = False
     next_deliver_at: Optional[datetime] = None
+    show_skip_wait: bool = False
     persona_activity: Optional[str] = None
 
 

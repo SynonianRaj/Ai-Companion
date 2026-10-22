@@ -239,8 +239,10 @@ async function loadChatHistory() {
     // If there are pending un-delivered chunks, schedule auto-delivery
     if (res.pending_delivery && res.next_deliver_at) {
       const waitMs = Math.max(300, new Date(res.next_deliver_at) - Date.now());
-      if (state.pacingMode !== "turbo") {
+      if (res.show_skip_wait && state.pacingMode !== "turbo") {
         showSkipWaitButton();
+      } else {
+        hideSkipWaitButton();
       }
       showTypingIndicator();
       state.pendingDeliveryTimer = setTimeout(() => {
@@ -508,9 +510,11 @@ async function flushUserBurst() {
       updatePersonaStatus("Online");
     }, seenDelay);
 
-    // Show Skip Wait button if realistic delay
-    if (res.delay_tier !== "quick" && state.pacingMode !== "turbo") {
+    // Show Skip Wait button only if backend authoritatively signals it
+    if (res.show_skip_wait && state.pacingMode !== "turbo") {
       showSkipWaitButton();
+    } else {
+      hideSkipWaitButton();
     }
 
     // Schedule progressive chunk rendering strictly from deliver_at
