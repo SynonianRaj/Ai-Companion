@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     GROQ_MAX_TOKENS: int = 300
     GROQ_FALLBACK_MAX_TOKENS: int = 600
     GEMINI_API_KEY: Union[str, None] = None
-    GEMINI_MODEL: str = "gemini-2.5-flash"
+    GEMINI_MODEL: str = "gemini-3.5-flash"
     OPENAI_API_KEY: Union[str, None] = None
     OPENAI_API_BASE: Union[str, None] = None
     OPENAI_MODEL: str = "gpt-4o-mini"

@@ -27,7 +27,7 @@ services:
       - key: GEMINI_API_KEY
         sync: false  # Supply your free Google AI Studio Gemini API key
       - key: GEMINI_MODEL
-        value: gemini-2.5-flash
+        value: gemini-3.5-flash
       - key: GROQ_API_KEY
         sync: false  # Supply your free Groq Cloud API key from console.groq.com (fallback)
       - key: GROQ_MODEL

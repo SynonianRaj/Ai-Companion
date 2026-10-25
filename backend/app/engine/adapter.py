@@ -1566,7 +1566,7 @@ class GeminiLLMAdapter(BaseLLMAdapter):
             if user_message:
                 contents.append({"role": "user", "parts": [{"text": user_message}]})
 
-        model_name = getattr(settings, "GEMINI_MODEL", "gemini-2.5-flash") or "gemini-2.5-flash"
+        model_name = getattr(settings, "GEMINI_MODEL", "gemini-3.5-flash") or "gemini-3.5-flash"
         temperature = getattr(settings, "LLM_TEMPERATURE", 0.8)
 
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={settings.GEMINI_API_KEY}"
@@ -1657,7 +1657,7 @@ class GeminiLLMAdapter(BaseLLMAdapter):
             recent_messages=context.get("recent_messages", []),
             stored_facts=context.get("stored_facts")
         )
-        model_name = getattr(settings, "GEMINI_MODEL", "gemini-2.5-flash") or "gemini-2.5-flash"
+        model_name = getattr(settings, "GEMINI_MODEL", "gemini-3.5-flash") or "gemini-3.5-flash"
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={settings.GEMINI_API_KEY}"
         payload = {
             "contents": [{"role": "user", "parts": [{"text": prompt}]}],
