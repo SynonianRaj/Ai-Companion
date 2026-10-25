@@ -19,9 +19,9 @@ class ClockService:
         return datetime.now(timezone.utc) + cls._offset
 
     @classmethod
-    def advance_time(cls, days: float = 0, hours: float = 0, minutes: float = 0) -> datetime:
+    def advance_time(cls, days: float = 0, hours: float = 0, minutes: float = 0, seconds: float = 0) -> datetime:
         """Advances the virtual test clock."""
-        cls._offset += timedelta(days=days, hours=hours, minutes=minutes)
+        cls._offset += timedelta(days=days, hours=hours, minutes=minutes, seconds=seconds)
         return cls.now()
 
     @classmethod

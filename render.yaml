@@ -23,10 +23,16 @@ services:
       - key: CRON_SECRET
         value: pilot-cron-secret-2026
       - key: LLM_PROVIDER
-        value: groq
+        value: gemini
+      - key: GEMINI_API_KEY
+        sync: false  # Supply your free Google AI Studio Gemini API key
+      - key: GEMINI_MODEL
+        value: gemini-2.5-flash
       - key: GROQ_API_KEY
-        sync: false  # Supply your free Groq Cloud API key from console.groq.com
+        sync: false  # Supply your free Groq Cloud API key from console.groq.com (fallback)
       - key: GROQ_MODEL
         value: qwen/qwen3.8-27b
       - key: GROQ_FALLBACK_MODEL
         value: openai/gpt-oss-20b
+      - key: RENDER_EXTERNAL_URL
+        sync: false

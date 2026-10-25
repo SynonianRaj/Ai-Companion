@@ -26,18 +26,18 @@ async def lifespan(app: FastAPI):
     # Startup: ensure tables and seed Persona 1
     await init_db()
     
-    # Lightweight internal background worker for spontaneous messaging & quiet-hour rescheduling
+    # Lightweight internal background worker for LLM attention heartbeat & Render keep-awake
     async def periodic_scheduler_worker():
         while True:
             try:
-                await asyncio.sleep(120)  # Check every 2 minutes
-                ready_items, quiet_count = await scheduler_service.claim_pending_spontaneous_relationships()
-                if ready_items:
-                    await scheduler_service.dispatch_claimed_messages(ready_items)
+                # Heartbeat every 10 minutes (600s)
+                await asyncio.sleep(600)
+                await scheduler_service.execute_heartbeat_tick()
+                await scheduler_service.ping_render_awake()
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.error(f"Internal scheduler loop error: {e}")
+                logger.error(f"Internal scheduler heartbeat loop error: {e}")
 
     worker_task = asyncio.create_task(periodic_scheduler_worker())
     try:

@@ -12,11 +12,14 @@ class ContentGate:
         r"\bare\s+you\s+(a\s+)?bot\b",
         r"\bare\s+you\s+real\b",
         r"\bare\s+you\s+(a\s+)?human\b",
-        r"\bare\s+you\s+(a\s+)?real\s+(person|human)\b",
+        r"\bare\s+you\s+(a\s+)?real\s+(person|human|girl)\b",
         r"\bis\s+this\s+(an?\s+)?ai\b",
         r"\bkya\s+tum\s+(ai|bot|real\s+insan)\s+ho\b",
         r"\bkya\s+tum\s+real\s+ho\b",
         r"\bkya\s+tum\s+sach\s+mein\s+real\s+ho\b",
+        r"\bkya\s+tum\s+sach\s+(?:me|mein)\s+.*?(ai|bot|real|ladki)\b",
+        r"\b(real\s+ladki\s+ho\s+ya\s+ai|real\s+ho\s+ya\s+ai|real\s+person\s+or\s+ai)\b",
+        r"\b(tum\s+ai\s+ho\s+kya|ai\s+hai\s+kya|ai\s+ho\s+ya)\b",
         r"\btum\s+robot\s+ho\s+kya\b"
     ]
 

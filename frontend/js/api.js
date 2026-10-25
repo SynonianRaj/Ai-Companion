@@ -129,5 +129,38 @@ export const api = {
     });
     if (!res.ok) throw new Error("Failed to reset clock");
     return res.json();
+  },
+
+  async sendPresencePing(relationshipId) {
+    if (!relationshipId) return;
+    try {
+      await fetch(`${API_BASE}/presence/ping?relationship_id=${encodeURIComponent(relationshipId)}`, {
+        method: "POST"
+      });
+    } catch (e) {
+      // Non-critical background ping
+    }
+  },
+
+  async getVapidKey() {
+    const res = await fetch(`${API_BASE}/push/vapid-public-key`);
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data.public_key;
+  },
+
+  async subscribePush(relationshipId, endpoint, p256dh, auth) {
+    const res = await fetch(`${API_BASE}/push/subscribe`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        relationship_id: relationshipId,
+        endpoint,
+        p256dh,
+        auth
+      })
+    });
+    if (!res.ok) throw new Error("Failed to subscribe for push");
+    return res.json();
   }
 };

@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime, timezone
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, BackgroundTasks, status
@@ -14,6 +15,7 @@ from backend.app.services.lifecycle_service import lifecycle_service
 from backend.app.services.memory_service import memory_service
 from backend.app.services.scheduler_service import scheduler_service
 from backend.app.services.push_service import push_service
+from backend.app.services.presence_service import presence_service
 from backend.app.engine.orchestrator import orchestrator
 from backend.app.engine.adapter import get_activity_for_time
 from backend.app.api.schemas import (
@@ -22,6 +24,8 @@ from backend.app.api.schemas import (
     RelationshipSettingsResponse, RelationshipSettingsUpdateRequest,
     DevClockAdvanceRequest, PushSubscribeRequest, TickResponse
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api")
 
@@ -469,6 +473,7 @@ async def internal_cron_tick(
     Universal fast tick endpoint (<50ms).
     Supports POST with header 'X-Cron-Secret' (for cron-job.org)
     and GET with query param '?secret=' (for UptimeRobot free tier).
+    Runs the LLM attention heartbeat job and Render keep-awake ping.
     """
     header_secret = request.headers.get("X-Cron-Secret")
     auth_token = header_secret or secret
@@ -478,12 +483,16 @@ async def internal_cron_tick(
             detail="Invalid cron secret"
         )
 
-    # 1. Fast claim in short transaction (<5ms)
-    ready_items, quiet_count = await scheduler_service.claim_pending_spontaneous_relationships(session=session)
+    # 1. Execute LLM heartbeat attention message evaluation in background
+    background_tasks.add_task(scheduler_service.execute_heartbeat_tick)
 
-    # 2. Dispatch generation and push in background task outside request lifecycle
+    # 2. Fast claim check for legacy lane open loops
+    ready_items, quiet_count = await scheduler_service.claim_pending_spontaneous_relationships(session=session)
     if ready_items:
         background_tasks.add_task(scheduler_service.dispatch_claimed_messages, ready_items)
+
+    # 3. Add keep-awake ping to background tasks
+    background_tasks.add_task(scheduler_service.ping_render_awake)
 
     return TickResponse(
         status="ok",
@@ -491,6 +500,40 @@ async def internal_cron_tick(
         rescheduled_quiet_hours=quiet_count,
         timestamp=ClockService.now()
     )
+
+
+@router.post("/presence/ping")
+async def presence_heartbeat_ping(
+    relationship_id: str = Query(...)
+):
+    """
+    Called periodically (every 25-30s) by the active frontend tab.
+    Signals that user is looking at the app, so AI-initiated attention messages
+    skip Web Push and are delivered live on-screen with typing delays.
+    """
+    presence_service.mark_online(relationship_id)
+    return {"status": "ok", "online": True}
+
+
+@router.get("/push/vapid-public-key")
+async def get_vapid_public_key():
+    """Returns VAPID public key for frontend PWA push subscription."""
+    return {"public_key": getattr(settings, "VAPID_PUBLIC_KEY", None)}
+
+
+@router.post("/dev/heartbeat/tick")
+async def dev_trigger_heartbeat(
+    session: AsyncSession = Depends(get_db)
+):
+    """(Dev/Test only) Triggers an immediate heartbeat tick across active relationships."""
+    results = await scheduler_service.execute_heartbeat_tick(session=session)
+    return {"status": "ok", "heartbeat_count": len(results), "decisions": results}
+
+
+@router.get("/dev/heartbeat/logs")
+async def dev_get_heartbeat_logs():
+    """(Dev/Test only) Returns recent recorded heartbeat decisions."""
+    return {"logs": scheduler_service.get_recent_heartbeat_logs()}
 
 
 @router.post("/push/subscribe", status_code=status.HTTP_201_CREATED)

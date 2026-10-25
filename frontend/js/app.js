@@ -218,6 +218,7 @@ async function loadChatHistory() {
     if (messages.length === 0) {
       // Opening Turn: trigger grounded stranger opener
       appendInitialIcebreaker();
+      knownMessageCount = 0;
     } else {
       let lastRole = null;
       messages.forEach((msg) => {
@@ -230,6 +231,7 @@ async function loadChatHistory() {
         });
         lastRole = msg.role;
       });
+      knownMessageCount = messages.length;
     }
 
     if (res.persona_activity) {
@@ -559,6 +561,7 @@ function scheduleChunkDeliveries(chunkDetails, userBurst) {
       if (idx === chunkDetails.length - 1) {
         hideSkipWaitButton();
         updatePersonaStatus("Online");
+        maybePromptPushPermission();
       }
     }, waitMs);
     state.activeChunkTimeouts.push(tDeliver);
@@ -714,6 +717,123 @@ document.getElementById("reset-clock-btn").addEventListener("click", async () =>
   alert("Clock reset to system time.");
   refreshRelationshipStatus();
 });
+
+// Push Notification Permission Helpers
+const pushPermissionBanner = document.getElementById("push-permission-banner");
+const enablePushBtn = document.getElementById("enable-push-btn");
+const dismissPushBtn = document.getElementById("dismiss-push-btn");
+
+function maybePromptPushPermission() {
+  if (!("Notification" in window)) return;
+  if (Notification.permission === "default" && !localStorage.getItem("aanya_push_prompt_dismissed")) {
+    if (pushPermissionBanner) pushPermissionBanner.style.display = "flex";
+  }
+}
+
+if (enablePushBtn) {
+  enablePushBtn.addEventListener("click", async () => {
+    if (pushPermissionBanner) pushPermissionBanner.style.display = "none";
+    try {
+      const perm = await Notification.requestPermission();
+      if (perm === "granted") {
+        await subscribeToWebPush();
+      }
+    } catch (e) {
+      console.warn("Notification request permission failed:", e);
+    }
+  });
+}
+
+if (dismissPushBtn) {
+  dismissPushBtn.addEventListener("click", () => {
+    if (pushPermissionBanner) pushPermissionBanner.style.display = "none";
+    localStorage.setItem("aanya_push_prompt_dismissed", "1");
+  });
+}
+
+function urlBase64ToUint8Array(base64String) {
+  const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/\-/g, "+").replace(/_/g, "/");
+  const rawData = window.atob(base64);
+  const outputArray = new Uint8Array(rawData.length);
+  for (let i = 0; i < rawData.length; ++i) {
+    outputArray[i] = rawData.charCodeAt(i);
+  }
+  return outputArray;
+}
+
+async function subscribeToWebPush() {
+  if (!("serviceWorker" in navigator) || !("PushManager" in window)) return;
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    const vapidKey = await api.getVapidKey();
+    if (!vapidKey) return;
+    const sub = await reg.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlBase64ToUint8Array(vapidKey)
+    });
+    const subJson = sub.toJSON();
+    if (subJson && subJson.keys && state.relationship && state.relationship.id) {
+      await api.subscribePush(
+        state.relationship.id,
+        sub.endpoint,
+        subJson.keys.p256dh,
+        subJson.keys.auth
+      );
+      console.log("Web Push subscription registered successfully");
+    }
+  } catch (err) {
+    console.warn("Web Push registration error:", err);
+  }
+}
+
+// Periodic presence ping (every 25s) so backend knows user is currently looking at app
+setInterval(() => {
+  if (state.relationship && state.relationship.id && document.visibilityState === "visible") {
+    api.sendPresencePing(state.relationship.id);
+  }
+}, 25000);
+
+window.addEventListener("focus", () => {
+  if (state.relationship && state.relationship.id) {
+    api.sendPresencePing(state.relationship.id);
+    checkForNewMessages();
+  }
+});
+
+let knownMessageCount = 0;
+async function checkForNewMessages() {
+  if (!state.relationship || !state.relationship.id) return;
+  try {
+    const res = await api.getHistory(state.relationship.id);
+    const msgs = res.messages || (Array.isArray(res) ? res : []);
+    if (knownMessageCount > 0 && msgs.length > knownMessageCount) {
+      const newMsgs = msgs.slice(knownMessageCount);
+      knownMessageCount = msgs.length;
+      newMsgs.forEach(m => {
+        if (m.role === "assistant") {
+          showTypingIndicator();
+          setTimeout(() => {
+            removeTypingIndicator();
+            appendMessageElement("assistant", m.content, { timestamp: m.created_at });
+            updatePersonaStatus("Online");
+          }, 1200);
+        }
+      });
+    } else {
+      knownMessageCount = msgs.length;
+    }
+  } catch (e) {
+    // Non-critical background check
+  }
+}
+
+// Live message polling for online users (every 4s)
+setInterval(() => {
+  if (document.visibilityState === "visible" && state.relationship && state.relationship.id && state.userBurstQueue.length === 0) {
+    checkForNewMessages();
+  }
+}, 4000);
 
 // Start App
 init();

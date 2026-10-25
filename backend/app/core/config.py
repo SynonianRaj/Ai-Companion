@@ -23,17 +23,19 @@ class Settings(BaseSettings):
     INACTIVITY_REMINDER_DAYS: int = 12
 
     # LLM Settings (Option 3: Hybrid Architecture)
-    LLM_PROVIDER: str = "mock"  # "mock", "groq", "gemini", "openai"
+    LLM_PROVIDER: str = "gemini"  # "gemini", "groq", "mock", "openai"
+    LLM_TEMPERATURE: float = 0.8
     GROQ_API_KEY: Union[str, None] = None
     GROQ_MODEL: str = "qwen/qwen3.8-27b"
     GROQ_FALLBACK_MODEL: str = "openai/gpt-oss-20b"
     GROQ_MAX_TOKENS: int = 300
     GROQ_FALLBACK_MAX_TOKENS: int = 600
     GEMINI_API_KEY: Union[str, None] = None
-    GEMINI_MODEL: str = "gemini-1.5-flash"
+    GEMINI_MODEL: str = "gemini-2.5-flash"
     OPENAI_API_KEY: Union[str, None] = None
     OPENAI_API_BASE: Union[str, None] = None
     OPENAI_MODEL: str = "gpt-4o-mini"
+    RENDER_EXTERNAL_URL: Union[str, None] = None
 
     # Rate Limiting (survives dyno spin-downs via DB)
     RATE_LIMIT_PER_MINUTE: int = 6

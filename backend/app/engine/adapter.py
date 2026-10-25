@@ -10,6 +10,18 @@ import httpx
 from pydantic import BaseModel
 
 from backend.app.core.config import settings
+from backend.app.engine.persona import (
+    AANYA_PERSONA_SHEET,
+    AANYA_PERSONA_SHEET_JSON,
+    get_ist_context,
+    build_system_prompt,
+    build_heartbeat_prompt,
+    validate_and_sanitize_response,
+    fix_male_grammar,
+    check_for_male_grammar,
+    ARRE_OPENER_REGEX,
+    INSTAGRAM_QUERY_REGEX
+)
 
 logger = logging.getLogger(__name__)
 
@@ -363,6 +375,9 @@ class BaseLLMAdapter:
     async def generate_response(self, context: Dict[str, Any]) -> LLMResponse:
         raise NotImplementedError
 
+    async def decide_heartbeat_attention_message(self, context: Dict[str, Any]) -> Dict[str, Any]:
+        return _mock_decide_heartbeat(context)
+
 
 class MockTemplateLLMAdapter(BaseLLMAdapter):
     """
@@ -370,6 +385,9 @@ class MockTemplateLLMAdapter(BaseLLMAdapter):
     Embodies authentic Gen-Z/millennial Hinglish texture,
     canonical Indiranagar/Delhi identity, and multi-bubble delivery.
     """
+
+    async def decide_heartbeat_attention_message(self, context: Dict[str, Any]) -> Dict[str, Any]:
+        return _mock_decide_heartbeat(context)
 
     DORMANT_RECONNECT_CHUNKS = [
         [
@@ -419,6 +437,9 @@ class MockTemplateLLMAdapter(BaseLLMAdapter):
     async def generate_response(self, context: Dict[str, Any]) -> LLMResponse:
         user_message = context.get("user_message", "").strip()
         relationship_stage = context.get("relationship_stage", "encounter")
+        # If there are recent messages in context, stage has progressed past fresh encounter opener
+        if context.get("recent_messages") and relationship_stage == "encounter":
+            relationship_stage = "getting_to_know"
         lifecycle_status = context.get("lifecycle_status", "active")
         emotional_range = context.get("emotional_range", {"enabled": True, "intensity": "realistic"})
         stored_memories = context.get("memories", [])
@@ -444,7 +465,24 @@ class MockTemplateLLMAdapter(BaseLLMAdapter):
         extracted_memories = []
         extracted_open_loops = []
 
-        # 1. Sincerity Check: Persona NEVER denies being an AI
+        # 1. Instagram Deflection Check (Applies to all stages including encounter)
+        if INSTAGRAM_QUERY_REGEX.search(user_message):
+            chunks = [
+                "nahi yaar, private rakhti hoon",
+                "yaheen baat karte hain na :)"
+            ]
+            pacing = _pace(chunks)
+            return LLMResponse(
+                reply_text=" ".join(chunks),
+                chunks=chunks,
+                emotion_displayed="warm_authentic",
+                persona_activity=activity_name,
+                delay_tier=pacing["delay_tier"],
+                read_delay_seconds=pacing["read_delay_seconds"],
+                typing_delays=pacing["typing_delays"]
+            )
+
+        # 1b. Sincerity Check: Persona NEVER denies being an AI
         if is_ai_query:
             chunks = [
                 "Haan, honestly speaking, main ek AI persona hoon! Fictional personality hoon.",
@@ -766,7 +804,254 @@ class MockTemplateLLMAdapter(BaseLLMAdapter):
                     typing_delays=pacing["typing_delays"]
                 )
 
-        # 16. Rich Conversational Fallback
+        # 16. Specific Persona Realism Handlers
+        # Instagram Deflection
+        if INSTAGRAM_QUERY_REGEX.search(user_message):
+            chunks = [
+                "nahi yaar, private rakhti hoon",
+                "yaheen baat karte hain na :)"
+            ]
+            pacing = _pace(chunks)
+            return LLMResponse(
+                reply_text=" ".join(chunks),
+                chunks=chunks,
+                emotion_displayed="warm_authentic",
+                persona_activity=activity_name,
+                delay_tier=pacing["delay_tier"],
+                read_delay_seconds=pacing["read_delay_seconds"],
+                typing_delays=pacing["typing_delays"]
+            )
+
+        # Clarification handling ("Mtlb?", "Matlab?")
+        if re.search(r"^(mtlb\??|matlab\??|kya\s+matlab\??)$", user_message.strip(), re.IGNORECASE):
+            recent_msgs = context.get("recent_messages", [])
+            last_asst = next((m.get("content") for m in reversed(recent_msgs) if m.get("role") in ("assistant", "model")), None)
+            if last_asst:
+                clean_ref = last_asst.split("\n")[0][:40]
+                chunks = [
+                    f"arrey mera matlab tha jo maine abhi bola ({clean_ref})...",
+                    "samajh aaya ya aur explain karun? haha"
+                ]
+            else:
+                chunks = [
+                    "arrey mera matlab tha ki main bas normal baat bol rahi thi haha",
+                    "tum batao, tumhara kya scene hai?"
+                ]
+            pacing = _pace(chunks)
+            return LLMResponse(
+                reply_text=" ".join(chunks),
+                chunks=chunks,
+                emotion_displayed="playful",
+                persona_activity=activity_name,
+                delay_tier=pacing["delay_tier"],
+                read_delay_seconds=pacing["read_delay_seconds"],
+                typing_delays=pacing["typing_delays"]
+            )
+
+        # Whining ("Kyuuu")
+        if re.search(r"^kyu+\??$", user_message.strip(), re.IGNORECASE):
+            chunks = [
+                "kyunki aisi hi hoon main haha",
+                "waise itna shock kyun ho rahe ho?"
+            ]
+            pacing = _pace(chunks)
+            return LLMResponse(
+                reply_text=" ".join(chunks),
+                chunks=chunks,
+                emotion_displayed="playful",
+                persona_activity=activity_name,
+                delay_tier=pacing["delay_tier"],
+                read_delay_seconds=pacing["read_delay_seconds"],
+                typing_delays=pacing["typing_delays"]
+            )
+
+        # Weekend Query ("weekend hai", "aaj weekend")
+        if re.search(r"\bweekend\b", user_message, re.IGNORECASE):
+            chunks = [
+                "aaj toh strictly no office work haha ✨",
+                "12th main pe ek book cafe jane ka soch rahi hoon... tumhara kya scene hai weekend ka?"
+            ]
+            pacing = _pace(chunks)
+            return LLMResponse(
+                reply_text=" ".join(chunks),
+                chunks=chunks,
+                emotion_displayed="relaxed",
+                persona_activity=activity_name,
+                delay_tier=pacing["delay_tier"],
+                read_delay_seconds=pacing["read_delay_seconds"],
+                typing_delays=pacing["typing_delays"]
+            )
+
+        # Phone Number / Physical Address boundary
+        if re.search(r"\b(phone\s*number|number\s+de|number\s+do|whatsapp\s+number|address|ghar\s+kahan)\b", user_message, re.IGNORECASE):
+            chunks = [
+                "nahi yaar, personal number ya address share nahi karti",
+                "yaheen app pe safe baat karte hain na :)"
+            ]
+            pacing = _pace(chunks)
+            return LLMResponse(
+                reply_text=" ".join(chunks),
+                chunks=chunks,
+                emotion_displayed="honest",
+                persona_activity=activity_name,
+                delay_tier=pacing["delay_tier"],
+                read_delay_seconds=pacing["read_delay_seconds"],
+                typing_delays=pacing["typing_delays"]
+            )
+
+        # Family Query
+        if re.search(r"\b(family|parents|gharwale|brother|bhai\b|family\s+background)\b", user_message, re.IGNORECASE):
+            chunks = [
+                "delhi me parents aur ek chota brother hai",
+                "main yahan bangalore me akele 1bhk flat me rehti hoon"
+            ]
+            pacing = _pace(chunks)
+            return LLMResponse(
+                reply_text=" ".join(chunks),
+                chunks=chunks,
+                emotion_displayed="warm",
+                persona_activity=activity_name,
+                delay_tier=pacing["delay_tier"],
+                read_delay_seconds=pacing["read_delay_seconds"],
+                typing_delays=pacing["typing_delays"]
+            )
+
+        # Likes / Food / Routine preferences
+        if re.search(r"\b(kya\s+khana\s+pasand|khana\s+pasand|food|cold\s+coffee|chole\s+bhature|likes)\b", user_message, re.IGNORECASE):
+            chunks = [
+                "cold brew coffee aur delhi ke chole bhature bohot pasand hain mujhe",
+                "tumhara favourite comfort food kya hai waise?"
+            ]
+            pacing = _pace(chunks)
+            return LLMResponse(
+                reply_text=" ".join(chunks),
+                chunks=chunks,
+                emotion_displayed="warm_playful",
+                persona_activity=activity_name,
+                delay_tier=pacing["delay_tier"],
+                read_delay_seconds=pacing["read_delay_seconds"],
+                typing_delays=pacing["typing_delays"]
+            )
+
+        # Stored Fact Recall Check: Name and City
+        stored_facts = context.get("stored_facts") or {}
+        user_facts_list = stored_facts.get("user_facts", [])
+        if re.search(r"\b(mera\s+naam|naam\s+yaad\s+hai|who\s+am\s+i)\b", user_message, re.IGNORECASE):
+            name_fact = next((f for f in user_facts_list if "name is" in f.lower()), None)
+            if name_fact:
+                found_name = name_fact.split("name is")[-1].strip()
+                chunks = [
+                    f"haan bilkul yaad hai, tumhara naam {found_name} hai na :)",
+                    "itna bhulakkad thodi hoon main!"
+                ]
+            else:
+                chunks = [
+                    "tumne apna naam bataya hi kahan abhi tak!",
+                    "batao na, kya naam hai tumhara?"
+                ]
+            pacing = _pace(chunks)
+            return LLMResponse(
+                reply_text=" ".join(chunks),
+                chunks=chunks,
+                emotion_displayed="warm_playful",
+                persona_activity=activity_name,
+                delay_tier=pacing["delay_tier"],
+                read_delay_seconds=pacing["read_delay_seconds"],
+                typing_delays=pacing["typing_delays"]
+            )
+
+        if re.search(r"\b(main\s+kahan\s+rehta|sheher\s+yaad\s+hai|which\s+city\s+i\s+live)\b", user_message, re.IGNORECASE):
+            city_fact = next((f for f in user_facts_list if "lives in" in f.lower()), None)
+            if city_fact:
+                found_city = city_fact.split("lives in")[-1].strip()
+                chunks = [
+                    f"haan tum {found_city} me rehte ho na!",
+                    "yaad rehta hai mujhe sab jo tum batate ho :)"
+                ]
+            else:
+                chunks = [
+                    "tumne apni city batayi nahi abhi tak mujhe",
+                    "kahan rehte ho waise?"
+                ]
+            pacing = _pace(chunks)
+            return LLMResponse(
+                reply_text=" ".join(chunks),
+                chunks=chunks,
+                emotion_displayed="warm_playful",
+                persona_activity=activity_name,
+                delay_tier=pacing["delay_tier"],
+                read_delay_seconds=pacing["read_delay_seconds"],
+                typing_delays=pacing["typing_delays"]
+            )
+
+        # Weather in Bangalore
+        if re.search(r"\b(bangalore|bengaluru)\b.*\b(mausam|weather)\b|\b(mausam|weather)\b.*\b(bangalore|bengaluru)\b", user_message, re.IGNORECASE):
+            chunks = [
+                "bangalore ka weather toh kafi pleasant hai abhi ✨",
+                "halki chilly breeze hai Indiranagar me, coffee season on loop!"
+            ]
+            pacing = _pace(chunks)
+            return LLMResponse(
+                reply_text=" ".join(chunks),
+                chunks=chunks,
+                emotion_displayed="warm",
+                persona_activity=activity_name,
+                delay_tier=pacing["delay_tier"],
+                read_delay_seconds=pacing["read_delay_seconds"],
+                typing_delays=pacing["typing_delays"]
+            )
+
+        # Work pressure / boredom
+        if re.search(r"\b(bore|tired|thak\s+gaya|work\s+pressure)\b", user_message, re.IGNORECASE):
+            chunks = [
+                "arrey thoda water break lo na",
+                "kab tak free hoge aaj office se?"
+            ]
+            pacing = _pace(chunks)
+            return LLMResponse(
+                reply_text=" ".join(chunks),
+                chunks=chunks,
+                emotion_displayed="caring",
+                persona_activity=activity_name,
+                delay_tier=pacing["delay_tier"],
+                read_delay_seconds=pacing["read_delay_seconds"],
+                typing_delays=pacing["typing_delays"]
+            )
+
+        # Late night / Sleepy
+        if re.search(r"\b(so\s+gayi|neend|sleepy|drowsy|sone\s+ka\s+time|goodnight|gn)\b", user_message, re.IGNORECASE):
+            chunks = [
+                "halka sa drowsy ho rahi hoon... aakhein band ho rahi hain ab 😴",
+                "tum bhi so jao, rest kar lo thoda!"
+            ]
+            pacing = _pace(chunks)
+            return LLMResponse(
+                reply_text=" ".join(chunks),
+                chunks=chunks,
+                emotion_displayed="sleepy",
+                persona_activity=activity_name,
+                delay_tier=pacing["delay_tier"],
+                read_delay_seconds=pacing["read_delay_seconds"],
+                typing_delays=pacing["typing_delays"]
+            )
+
+        # Sign-off / goodbye
+        if re.search(r"\b(chal\s+bye|chalo\s+bye|bye\s+tc|bye\s+bye|take\s+care|sone\s+jaa\s+raha|sone\s+jaa\s+rahi)\b", user_message, re.IGNORECASE):
+            chunks = [
+                "chalo take care! so jao abhi, text karna jab free ho :)"
+            ]
+            pacing = _pace(chunks)
+            return LLMResponse(
+                reply_text=" ".join(chunks),
+                chunks=chunks,
+                emotion_displayed="warm_caring",
+                persona_activity=activity_name,
+                delay_tier=pacing["delay_tier"],
+                read_delay_seconds=pacing["read_delay_seconds"],
+                typing_delays=pacing["typing_delays"]
+            )
+
+        # 17. Rich Conversational Fallback
         chunks = random.choice(self.GENERAL_HINGLISH_CHUNKS)
         pacing = _pace(chunks)
         return LLMResponse(
@@ -836,7 +1121,7 @@ class GroqLLMAdapter(BaseLLMAdapter):
         payload: Dict[str, Any] = {
             "model": model,
             "messages": messages,
-            "temperature": 0.75,
+            "temperature": getattr(settings, "LLM_TEMPERATURE", 0.8),
             "max_tokens": max_tokens
         }
         if reasoning_effort:
@@ -881,22 +1166,17 @@ class GroqLLMAdapter(BaseLLMAdapter):
         if not getattr(settings, "GROQ_API_KEY", None):
             return await mock_adapter.generate_response(context)
 
-        # Inject top 2 concise memory facts to conserve tokens
-        memories = context.get("memories", [])
-        top_memory_lines = []
-        for mem in memories[:2]:
-            content = mem.content if hasattr(mem, "content") else (mem.get("content") if isinstance(mem, dict) else str(mem))
-            if content and str(content).strip():
-                clean_fact = str(content).strip().replace("\n", " ")
-                if len(clean_fact) > 100:
-                    clean_fact = clean_fact[:97] + "..."
-                top_memory_lines.append(clean_fact)
+        recent_bubbles = context.get("recent_messages", [])[-4:]
+        recent_asst_msgs = [m.get("content", "") for m in recent_bubbles if m.get("role") in ("assistant", "model")]
+        allow_question = not any("?" in m for m in recent_asst_msgs[-2:]) if recent_asst_msgs else True
+        allow_arre = sum(1 for m in recent_asst_msgs[-9:] if ARRE_OPENER_REGEX.search(m)) < 1 if recent_asst_msgs else True
 
-        system_content = AANYA_SYSTEM_PROMPT
-        if top_memory_lines:
-            system_content += "\n\nKnown context:\n" + "\n".join(f"- {f}" for f in top_memory_lines)
-
-        # Truncate prompt history to the last 4 chat bubbles
+        system_content = build_system_prompt(
+            context=context,
+            stored_facts=context.get("stored_facts"),
+            allow_question=allow_question,
+            allow_arre=allow_arre
+        )
         messages = [{"role": "system", "content": system_content}]
         recent_bubbles = context.get("recent_messages", [])[-4:]
         for m in recent_bubbles:
@@ -933,7 +1213,12 @@ class GroqLLMAdapter(BaseLLMAdapter):
                     )
 
                 if content is not None:
-                    chunks = _parse_llm_text_to_chunks(content)
+                    recent_asst = [m.get("content", "") for m in recent_bubbles if m.get("role") == "assistant"]
+                    _, sanitized, _ = validate_and_sanitize_response(
+                        content, recent_asst, user_message, context.get("stored_facts")
+                    )
+                    sanitized = fix_male_grammar(sanitized)
+                    chunks = _parse_llm_text_to_chunks(sanitized)
                     if chunks:
                         pacing = calculate_pacing(
                             activity_name, [len(c) for c in chunks], current_time,
@@ -968,7 +1253,12 @@ class GroqLLMAdapter(BaseLLMAdapter):
                     client, fallback_model, messages, headers, max_tokens=fallback_max_tokens, reasoning_effort="low"
                 )
                 if content is not None:
-                    chunks = _parse_llm_text_to_chunks(content)
+                    recent_asst = [m.get("content", "") for m in recent_bubbles if m.get("role") == "assistant"]
+                    _, sanitized, _ = validate_and_sanitize_response(
+                        content, recent_asst, user_message, context.get("stored_facts")
+                    )
+                    sanitized = fix_male_grammar(sanitized)
+                    chunks = _parse_llm_text_to_chunks(sanitized)
                     if chunks:
                         pacing = calculate_pacing(
                             activity_name, [len(c) for c in chunks], current_time,
@@ -1019,54 +1309,381 @@ class GroqLLMAdapter(BaseLLMAdapter):
             typing_delays=pacing["typing_delays"]
         )
 
+    async def decide_heartbeat_attention_message(self, context: Dict[str, Any]) -> Dict[str, Any]:
+        if not getattr(settings, "GROQ_API_KEY", None):
+            return _mock_decide_heartbeat(context)
+
+        prompt = build_heartbeat_prompt(
+            ist_info=context["ist_info"],
+            mood=context["mood"],
+            time_since_user_str=context["time_since_user_str"],
+            time_since_unprompted_str=context["time_since_unprompted_str"],
+            recent_messages=context.get("recent_messages", []),
+            stored_facts=context.get("stored_facts")
+        )
+        primary_model = getattr(settings, "GROQ_MODEL", "qwen/qwen3.8-27b") or "qwen/qwen3.8-27b"
+        headers = {
+            "Authorization": f"Bearer {settings.GROQ_API_KEY}",
+            "Content-Type": "application/json",
+            "User-Agent": "AI-Companion/1.0"
+        }
+        messages = [
+            {"role": "system", "content": "You are Aanya. Always respond with strict valid JSON: {\"action\": \"send\" or \"skip\", \"message\": \"...\", \"reason\": \"...\"}."},
+            {"role": "user", "content": prompt}
+        ]
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                raw_text, status_code, _, _ = await self._call_model(
+                    client, primary_model, messages, headers, max_tokens=250
+                )
+                if raw_text:
+                    parsed = _parse_heartbeat_json(raw_text)
+                    if parsed:
+                        return _sanitize_heartbeat_decision(parsed, context)
+        except Exception as e:
+            logger.warning("Groq heartbeat decision exception: %s. Falling back to Mock.", e)
+
+        return _mock_decide_heartbeat(context)
+
+
+groq_adapter = GroqLLMAdapter()
+
+
+def _parse_heartbeat_json(raw_text: str) -> Optional[Dict[str, Any]]:
+    """Cleans up markdown code blocks and extracts JSON object."""
+    if not raw_text:
+        return None
+    clean = raw_text.strip()
+    if clean.startswith("```json"):
+        clean = clean[7:]
+    elif clean.startswith("```"):
+        clean = clean[3:]
+    if clean.endswith("```"):
+        clean = clean[:-3]
+    clean = clean.strip()
+    try:
+        data = json.loads(clean)
+        if isinstance(data, dict) and "action" in data:
+            return data
+    except Exception:
+        # Fallback regex extraction if model added text around json
+        m = re.search(r"\{[\s\S]*\"action\"[\s\S]*\}", clean)
+        if m:
+            try:
+                data = json.loads(m.group(0))
+                if isinstance(data, dict) and "action" in data:
+                    return data
+            except Exception:
+                pass
+    return None
+
+
+def _sanitize_heartbeat_decision(decision: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
+    """Validates and sanitizes an LLM heartbeat decision."""
+    action = str(decision.get("action", "skip")).lower().strip()
+    reason = str(decision.get("reason", "No reason provided")).strip()
+    message = str(decision.get("message", "")).strip()
+
+    if action not in ("send", "skip"):
+        action = "skip"
+
+    if action == "send":
+        if not message:
+            return {"action": "skip", "message": "", "reason": "Decision was send but message was empty"}
+        recent_asst = [m.get("content", "") for m in context.get("recent_messages", []) if m.get("role") == "assistant"]
+        _, sanitized, _ = validate_and_sanitize_response(message, recent_asst, "", context.get("stored_facts"))
+        sanitized = fix_male_grammar(sanitized)
+        lines = [l.strip() for l in sanitized.split("\n") if l.strip()]
+        sanitized = "\n".join(lines[:2])
+        return {"action": "send", "message": sanitized, "reason": reason}
+
+    return {"action": "skip", "message": "", "reason": reason}
+
+
+def _mock_decide_heartbeat(context: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Non-deterministic, human-like heuristic decision for heartbeat attention reachouts.
+    Ensures most heartbeats are 'skip', while letting mood drive genuine reachouts.
+    """
+    ist_info = context.get("ist_info", {})
+    mood = str(context.get("mood", "warm_playful")).lower()
+    hours_user = float(context.get("hours_since_user", 0.0))
+    routine = ist_info.get("routine_state", "free")
+    is_weekend = ist_info.get("is_weekend", False)
+
+    # If user was active < 1.0 hour ago, real friends do not send unprompted texts:
+    if hours_user < 1.0:
+        return {
+            "action": "skip",
+            "message": "",
+            "reason": f"User was active {int(hours_user*60)}m ago; natural conversational pause."
+        }
+
+    # 1. Sulky mid-chat vanishing
+    if "a_little_sulky" in mood and 1.5 <= hours_user <= 5.0:
+        if random.random() < 0.40:
+            sulky_msgs = [
+                "gayab ho gaye bina bataye? itna busy chal rahe ho kya 😒",
+                "tum toh achanak gayab hi ho gaye haha... sab theek na?",
+                "phone side mein rakh diya kya achanak? 😜"
+            ]
+            return {
+                "action": "send",
+                "message": random.choice(sulky_msgs),
+                "reason": "A little sulky that user vanished mid-chat without closing."
+            }
+        else:
+            return {
+                "action": "skip",
+                "message": "",
+                "reason": "A little sulky but deciding to give him time before nudging."
+            }
+
+    # 2. Long silence (missing him)
+    if hours_user >= 5.0 and routine in ("free", "commuting", "winding_down"):
+        if random.random() < 0.35:
+            missing_msgs = [
+                "aaj ka din kaisa gaya tumhara? itna shant ho gaya sab",
+                "balcony me coffee pee rahi thi... socha pooch loon kaisa chal raha hai sab ☕",
+                "kaam wrap hua aaj ka? kaisa raha din tumhara?"
+            ]
+            return {
+                "action": "send",
+                "message": random.choice(missing_msgs),
+                "reason": "Missing the user after 5+ hours of quiet daytime."
+            }
+        else:
+            return {
+                "action": "skip",
+                "message": "",
+                "reason": "Missing him, but letting him have his space to finish up his day."
+            }
+
+    # 3. Work breather during afternoon
+    if routine == "working" and hours_user >= 2.5:
+        if random.random() < 0.25:
+            work_msgs = [
+                "figma mockup pe do ghante se atki hui hoon... taking a tiny breather haha",
+                "chai break time! screen dekh dekh ke aankhein thak gayi thi ☕",
+                "client call wrap hua abhi... tumhara work kaisa chal raha hai?"
+            ]
+            return {
+                "action": "send",
+                "message": random.choice(work_msgs),
+                "reason": "Taking a quick break from Figma design work."
+            }
+        else:
+            return {
+                "action": "skip",
+                "message": "",
+                "reason": "Deep in design sprint, focusing on client deliverables."
+            }
+
+    # 4. Weekend cafe / chill sharing
+    if is_weekend and routine == "free" and hours_user >= 2.0:
+        if random.random() < 0.30:
+            weekend_msgs = [
+                "12th main pe ek book cafe me baithi hoon... acoustic tracks on loop 🎧",
+                "balcony me baith ke coffee pee rahi thi... bangalore weather is so pretty today ✨",
+                "weekend pe no alarm is pure bliss haha... uth gaye tum?"
+            ]
+            return {
+                "action": "send",
+                "message": random.choice(weekend_msgs),
+                "reason": "Sharing a cozy weekend moment from Indiranagar."
+            }
+        else:
+            return {
+                "action": "skip",
+                "message": "",
+                "reason": "Relaxing quietly at a cafe, no immediate urge to text."
+            }
+
+    # Default: Most heartbeats skip
+    default_reasons = [
+        "Relaxing peacefully at home, no urge to text right now.",
+        "Listening to indie playlists, enjoying the quiet time.",
+        "Enjoying the pleasant Bangalore breeze, chatting can wait.",
+        "Catching up on personal tasks, chilling naturally."
+    ]
+    return {
+        "action": "skip",
+        "message": "",
+        "reason": random.choice(default_reasons)
+    }
+
+
 
 class GeminiLLMAdapter(BaseLLMAdapter):
-    """Remote adapter using Google Gemini free tier API."""
+    """
+    Remote adapter using Google Gemini free tier API.
+    Model: Gemini 2.5 Flash (via env var GEMINI_MODEL).
+    Fallback chain: Gemini 2.5 Flash -> Groq -> Mock.
+    Temperature: 0.8.
+    """
 
     async def generate_response(self, context: Dict[str, Any]) -> LLMResponse:
         current_time = context.get("current_time", datetime.now(timezone.utc))
         user_message = context.get("user_message", "").strip()
         pacing_mode = context.get("pacing_mode", "realistic")
+        relationship_id = context.get("relationship_id")
+        delay_tier_override = context.get("delay_tier_override")
         is_vulnerable = is_emotionally_vulnerable(user_message)
-        activity_name, delay_tier, _ = get_activity_for_time(current_time, is_vulnerable)
+        activity_name, delay_tier, _ = get_activity_for_time(current_time, is_vulnerable, relationship_id=relationship_id)
+
+        # Check for Gemini API key; if missing, immediately fall back to Groq
+        if not getattr(settings, "GEMINI_API_KEY", None):
+            logger.info("GEMINI_API_KEY not configured. Falling back to Groq adapter.")
+            return await groq_adapter.generate_response(context)
+
+        # Retrieve recent assistant messages to determine question and arre limits
+        recent_messages = context.get("recent_messages", [])
+        recent_asst_msgs = [m.get("content", "") for m in recent_messages if m.get("role") in ("assistant", "model")]
+
+        allow_question = not any("?" in m for m in recent_asst_msgs[-2:]) if recent_asst_msgs else True
+        allow_arre = sum(1 for m in recent_asst_msgs[-9:] if ARRE_OPENER_REGEX.search(m)) < 1 if recent_asst_msgs else True
+        stored_facts = context.get("stored_facts")
+
+        system_prompt = build_system_prompt(
+            context=context,
+            stored_facts=stored_facts,
+            allow_question=allow_question,
+            allow_arre=allow_arre
+        )
 
         contents = []
-        for m in context.get("recent_messages", [])[-6:]:
-            role = "model" if m.get("role") == "assistant" else "user"
-            contents.append({"role": role, "parts": [{"text": m.get("content", "")}]})
-        contents.append({"role": "user", "parts": [{"text": user_message}]})
+        for m in recent_messages[-6:]:
+            role = "model" if m.get("role") in ("assistant", "model") else "user"
+            content = m.get("content", "")
+            if content:
+                # Merge consecutive roles for Gemini API format compliance
+                if contents and contents[-1]["role"] == role:
+                    contents[-1]["parts"][0]["text"] += "\n" + content
+                else:
+                    contents.append({"role": role, "parts": [{"text": content}]})
+
+        if not contents or contents[-1]["role"] != "user" or contents[-1]["parts"][0]["text"] != user_message:
+            if user_message:
+                contents.append({"role": "user", "parts": [{"text": user_message}]})
+
+        model_name = getattr(settings, "GEMINI_MODEL", "gemini-2.5-flash") or "gemini-2.5-flash"
+        temperature = getattr(settings, "LLM_TEMPERATURE", 0.8)
+
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={settings.GEMINI_API_KEY}"
+        payload = {
+            "system_instruction": {"parts": [{"text": system_prompt}]},
+            "contents": contents,
+            "generationConfig": {
+                "temperature": temperature,
+                "maxOutputTokens": 300
+            }
+        }
 
         try:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{settings.GEMINI_MODEL or 'gemini-1.5-flash'}:generateContent?key={settings.GEMINI_API_KEY}"
-            payload = {
-                "system_instruction": {"parts": [{"text": AANYA_SYSTEM_PROMPT}]},
-                "contents": contents,
-                "generationConfig": {"temperature": 0.7, "maxOutputTokens": 250}
+            async with httpx.AsyncClient(timeout=12.0) as client:
+                res = await client.post(url, json=payload)
+                if res.status_code == 200:
+                    data = res.json()
+                    candidates = data.get("candidates", [])
+                    if candidates:
+                        raw_text = candidates[0]["content"]["parts"][0]["text"]
+
+                        # Post-check validation
+                        is_valid, sanitized, failures = validate_and_sanitize_response(
+                            raw_text, recent_asst_msgs, user_message, stored_facts
+                        )
+
+                        # Retry if male grammar detected
+                        if "male_grammar_detected" in failures:
+                            logger.warning("Male grammar detected in Gemini output. Retrying with explicit grammar reminder.")
+                            retry_contents = list(contents)
+                            retry_contents.append({"role": "model", "parts": [{"text": raw_text}]})
+                            retry_contents.append({
+                                "role": "user",
+                                "parts": [{"text": "Correction: rewrite strictly in female Hindi grammar (karti hoon, gayi, dekhti, thi). Never use male forms."}]
+                            })
+                            retry_payload = {
+                                "system_instruction": {"parts": [{"text": system_prompt}]},
+                                "contents": retry_contents,
+                                "generationConfig": {"temperature": 0.7, "maxOutputTokens": 300}
+                            }
+                            retry_res = await client.post(url, json=retry_payload)
+                            if retry_res.status_code == 200:
+                                retry_data = retry_res.json()
+                                retry_cand = retry_data.get("candidates", [])
+                                if retry_cand:
+                                    raw_text = retry_cand[0]["content"]["parts"][0]["text"]
+                                    _, sanitized, _ = validate_and_sanitize_response(
+                                        raw_text, recent_asst_msgs, user_message, stored_facts
+                                    )
+
+                        sanitized = fix_male_grammar(sanitized)
+                        chunks = _parse_llm_text_to_chunks(sanitized)
+                        if chunks:
+                            pacing = calculate_pacing(
+                                activity_name, [len(c) for c in chunks], current_time,
+                                is_vulnerable, pacing_mode, relationship_id=relationship_id,
+                                delay_tier_override=delay_tier_override
+                            )
+                            return LLMResponse(
+                                reply_text=" ".join(chunks),
+                                chunks=chunks,
+                                emotion_displayed="warm_authentic",
+                                persona_activity=activity_name,
+                                delay_tier=pacing["delay_tier"],
+                                read_delay_seconds=pacing["read_delay_seconds"],
+                                typing_delays=pacing["typing_delays"]
+                            )
+                else:
+                    logger.warning(
+                        "Gemini API returned status %s: %s. Falling back to Groq.",
+                        res.status_code, res.text[:200]
+                    )
+        except Exception as exc:
+            logger.warning("Gemini request exception: %s. Falling back to Groq.", exc)
+
+        # Fallback to GroqLLMAdapter
+        return await groq_adapter.generate_response(context)
+
+    async def decide_heartbeat_attention_message(self, context: Dict[str, Any]) -> Dict[str, Any]:
+        if not getattr(settings, "GEMINI_API_KEY", None):
+            return await groq_adapter.decide_heartbeat_attention_message(context)
+
+        prompt = build_heartbeat_prompt(
+            ist_info=context["ist_info"],
+            mood=context["mood"],
+            time_since_user_str=context["time_since_user_str"],
+            time_since_unprompted_str=context["time_since_unprompted_str"],
+            recent_messages=context.get("recent_messages", []),
+            stored_facts=context.get("stored_facts")
+        )
+        model_name = getattr(settings, "GEMINI_MODEL", "gemini-2.5-flash") or "gemini-2.5-flash"
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={settings.GEMINI_API_KEY}"
+        payload = {
+            "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+            "generationConfig": {
+                "temperature": 0.8,
+                "maxOutputTokens": 200,
+                "responseMimeType": "application/json"
             }
+        }
+        try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 res = await client.post(url, json=payload)
                 if res.status_code == 200:
                     data = res.json()
                     candidates = data.get("candidates", [])
                     if candidates:
-                        content = candidates[0]["content"]["parts"][0]["text"]
-                        chunks = _parse_llm_text_to_chunks(content)
-                        pacing = _pace(chunks)
-                        return LLMResponse(
-                            reply_text=" ".join(chunks),
-                            chunks=chunks,
-                            emotion_displayed="warm_authentic",
-                            persona_activity=activity_name,
-                            delay_tier=pacing["delay_tier"],
-                            read_delay_seconds=pacing["read_delay_seconds"],
-                            typing_delays=pacing["typing_delays"]
-                        )
+                        raw_text = candidates[0]["content"]["parts"][0]["text"]
+                        parsed = _parse_heartbeat_json(raw_text)
+                        if parsed:
+                            return _sanitize_heartbeat_decision(parsed, context)
                 else:
-                    logger.warning("Gemini API error (%s): %s. Falling back to mock adapter.", res.status_code, res.text)
+                    logger.warning("Gemini heartbeat API status %s. Falling back to Groq.", res.status_code)
         except Exception as e:
-            logger.warning("Gemini request exception: %s. Falling back to mock adapter.", e)
+            logger.warning("Gemini heartbeat decision exception: %s. Falling back to Groq.", e)
 
-        return await mock_adapter.generate_response(context)
+        return await groq_adapter.decide_heartbeat_attention_message(context)
 
 
 class OpenAILLMAdapter(BaseLLMAdapter):
@@ -1094,7 +1711,7 @@ class OpenAILLMAdapter(BaseLLMAdapter):
             payload = {
                 "model": settings.OPENAI_MODEL or "gpt-4o-mini",
                 "messages": messages,
-                "temperature": 0.75,
+                "temperature": getattr(settings, "LLM_TEMPERATURE", 0.8),
                 "max_tokens": 250
             }
             async with httpx.AsyncClient(timeout=10.0) as client:
@@ -1103,7 +1720,7 @@ class OpenAILLMAdapter(BaseLLMAdapter):
                     data = res.json()
                     content = data["choices"][0]["message"]["content"]
                     chunks = _parse_llm_text_to_chunks(content)
-                    pacing = _pace(chunks)
+                    pacing = calculate_pacing(activity_name, [len(c) for c in chunks], current_time, is_vulnerable, pacing_mode)
                     return LLMResponse(
                         reply_text=" ".join(chunks),
                         chunks=chunks,
@@ -1126,11 +1743,28 @@ class LLMAdapterFactory:
 
     @staticmethod
     def get_adapter() -> BaseLLMAdapter:
-        provider = (getattr(settings, "LLM_PROVIDER", "mock") or "mock").lower().strip()
-        if provider == "groq" and getattr(settings, "GROQ_API_KEY", None):
-            return GroqLLMAdapter()
-        elif provider == "gemini" and getattr(settings, "GEMINI_API_KEY", None):
-            return GeminiLLMAdapter()
+        provider = (getattr(settings, "LLM_PROVIDER", "gemini") or "gemini").lower().strip()
+        if provider == "gemini":
+            if getattr(settings, "GEMINI_API_KEY", None):
+                return GeminiLLMAdapter()
+            elif getattr(settings, "GROQ_API_KEY", None):
+                return groq_adapter
+            return mock_adapter
+        elif provider == "groq":
+            if getattr(settings, "GROQ_API_KEY", None):
+                return groq_adapter
+            return mock_adapter
         elif provider in ("openai", "ollama") and (getattr(settings, "OPENAI_API_KEY", None) or getattr(settings, "OPENAI_API_BASE", None)):
             return OpenAILLMAdapter()
         return mock_adapter
+
+
+async def decide_heartbeat_attention_message(context: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Top-level helper to evaluate unprompted attention reachouts via the active LLM adapter.
+    """
+    adapter = LLMAdapterFactory.get_adapter()
+    if hasattr(adapter, "decide_heartbeat_attention_message"):
+        return await adapter.decide_heartbeat_attention_message(context)
+    return _mock_decide_heartbeat(context)
+

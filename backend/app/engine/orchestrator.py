@@ -19,7 +19,12 @@ from backend.app.services.clock_service import ClockService
 from backend.app.services.lifecycle_service import lifecycle_service
 from backend.app.services.memory_service import memory_service
 from backend.app.engine.adapter import (
-    LLMAdapterFactory, mock_adapter, LLMResponse, calculate_pacing, get_activity_for_time
+    LLMAdapterFactory, mock_adapter, LLMResponse, calculate_pacing, get_activity_for_time, _parse_llm_text_to_chunks
+)
+from backend.app.engine.persona import (
+    validate_and_sanitize_response,
+    fix_male_grammar,
+    get_ist_context
 )
 
 
@@ -354,6 +359,7 @@ class Orchestrator:
                     )
                 )
                 .values(status="resolved", last_relevant_at=now)
+                .execution_options(synchronize_session=False)
             )
             await session.execute(close_stmt)
 
@@ -391,6 +397,7 @@ class Orchestrator:
                     )
                 )
                 .values(status="cancelled")
+                .execution_options(synchronize_session=False)
             )
             await session.execute(cancel_stmt)
 
@@ -407,6 +414,26 @@ class Orchestrator:
             is_ai_query = content_gate.is_ai_sincerity_query(combined_text) or any(
                 content_gate.is_ai_sincerity_query(c) for c in raw_chunks
             )
+
+            # Step 5b: Extract and Store Facts from User Message
+            extracted_user_facts = memory_service.extract_user_facts(combined_text)
+            for fact in extracted_user_facts:
+                if fact["type"] == "user_name":
+                    user.username = fact["content"].replace("User's name is ", "").strip()
+                elif fact["type"] == "user_city":
+                    user.city = fact["content"].replace("User lives in ", "").strip()
+                await memory_service.store_memory(
+                    session=session,
+                    relationship_id=relationship.id,
+                    user_id=user.id,
+                    persona_id=relationship.persona_id,
+                    memory_type=fact["type"],
+                    content=fact["content"],
+                    importance=fact.get("importance", 0.8)
+                )
+
+            # Retrieve structured facts for consistent context injection
+            structured_facts = await memory_service.get_structured_facts(session, relationship.id)
 
             # Retrieve scoped memories
             scoped_memories = await memory_service.retrieve_relevant_memories(
@@ -457,6 +484,7 @@ class Orchestrator:
                 ),
                 "is_ambiguous_distress": is_ambiguous_distress,
                 "memories": scoped_memories,
+                "stored_facts": structured_facts,
                 "recent_messages": recent_messages,
                 "is_ai_query": is_ai_query,
                 "user_name": user.username,
@@ -473,6 +501,37 @@ class Orchestrator:
                 active_adapter = LLMAdapterFactory.get_adapter()
 
             response: LLMResponse = await active_adapter.generate_response(context)
+            if "network thoda glitch" in response.reply_text.lower():
+                response = await mock_adapter.generate_response(context)
+
+            # Post-check validation and fact contradiction check
+            recent_asst_msgs = [m.get("content", "") for m in recent_messages if m.get("role") in ("assistant", "model")]
+            _, sanitized_reply, _ = validate_and_sanitize_response(
+                response.reply_text,
+                recent_asst_msgs,
+                combined_text,
+                structured_facts
+            )
+            sanitized_reply = fix_male_grammar(sanitized_reply)
+            if sanitized_reply != response.reply_text:
+                response.reply_text = sanitized_reply
+                new_chunks = _parse_llm_text_to_chunks(sanitized_reply)
+                if new_chunks:
+                    response.chunks = new_chunks
+                    response.typing_delays = [max(0.8, min(2.5, round(len(c) * 0.028, 2))) for c in new_chunks]
+
+            # Extract and store persona facts from assistant response
+            extracted_persona_facts = memory_service.extract_persona_facts(response.reply_text)
+            for p_fact in extracted_persona_facts:
+                await memory_service.store_memory(
+                    session=session,
+                    relationship_id=relationship.id,
+                    user_id=user.id,
+                    persona_id=relationship.persona_id,
+                    memory_type=p_fact["type"],
+                    content=p_fact["content"],
+                    importance=p_fact.get("importance", 0.6)
+                )
 
             # If opening turn and user has no city, set awaiting_city_reply for next turn
             if relationship.relationship_stage == "encounter" and not user.city:

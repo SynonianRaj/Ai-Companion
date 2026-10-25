@@ -221,6 +221,66 @@ html, body {
   align-items: center;
 }
 
+/* Push Permission Banner */
+.push-banner {
+  background: linear-gradient(90deg, #1e1b4b, #2e1065);
+  border-bottom: 1px solid #6366f1;
+  padding: 10px 14px;
+  font-size: 12.5px;
+  color: #e0e7ff;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+}
+
+.push-banner-content {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.push-banner-content .push-icon {
+  font-size: 20px;
+}
+
+.push-banner-content p {
+  margin: 2px 0 0;
+  font-size: 11px;
+  color: #a5b4fc;
+}
+
+.push-banner-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.btn-push-allow {
+  background: #6366f1;
+  color: #fff;
+  border: none;
+  padding: 5px 12px;
+  border-radius: 8px;
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.btn-push-allow:hover {
+  background: #4f46e5;
+}
+
+.btn-push-dismiss {
+  background: transparent;
+  color: #94a3b8;
+  border: 1px solid #475569;
+  padding: 5px 10px;
+  border-radius: 8px;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
 /* Chat Feed */
 .chat-feed {
   flex: 1 1 0%;
