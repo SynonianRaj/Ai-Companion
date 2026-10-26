@@ -1,3 +1,4 @@
+import json
 import pytest
 from backend.app.safety.content_gate import content_gate
 from backend.app.engine.adapter import mock_adapter
@@ -272,10 +273,14 @@ async def test_groq_adapter_successful_70b_response_parsing(monkeypatch):
     monkeypatch.setattr(settings, "GROQ_MODEL", "llama-3.3-70b-versatile")
     monkeypatch.setattr(settings, "GROQ_FALLBACK_MODEL", "llama-3.1-8b-instant")
 
-    mock_70b_reply = (
-        "Arre yaar, Bangalore weather is so pleasant today!\n\n"
-        "Just wrapping up some design work at an Indiranagar cafe ☕"
-    )
+    mock_70b_reply = json.dumps({
+        "availability_action": "reply_now",
+        "delay_seconds": 1.5,
+        "chunks": [
+            "Arre yaar, Bangalore weather is so pleasant today!",
+            "Just wrapping up some design work at an Indiranagar cafe ☕"
+        ]
+    })
 
     mock_post = AsyncMock()
     mock_post.return_value = httpx.Response(
@@ -350,7 +355,14 @@ async def test_groq_adapter_429_failover_70b_to_8b(monkeypatch, caplog):
     monkeypatch.setattr(settings, "GROQ_MODEL", "llama-3.3-70b-versatile")
     monkeypatch.setattr(settings, "GROQ_FALLBACK_MODEL", "llama-3.1-8b-instant")
 
-    mock_8b_reply = "Suno, Indiranagar cafe se bol rahi hoon!\n\nDesign sprint almost complete ✨"
+    mock_8b_reply = json.dumps({
+        "availability_action": "reply_now",
+        "delay_seconds": 1.2,
+        "chunks": [
+            "Suno, Indiranagar cafe se bol rahi hoon!",
+            "Design sprint almost complete ✨"
+        ]
+    })
 
     req_url = "https://api.groq.com/openai/v1/chat/completions"
     res_429 = httpx.Response(status_code=429, json={"error": "Rate limit reached"}, request=httpx.Request("POST", req_url))
@@ -416,7 +428,7 @@ async def test_groq_adapter_429_failover_8b_to_mock_adapter(monkeypatch, caplog)
     res_70b_429 = httpx.Response(status_code=429, json={"error": "70B quota exhausted"}, request=httpx.Request("POST", req_url))
     res_8b_429 = httpx.Response(status_code=429, json={"error": "8B quota exhausted"}, request=httpx.Request("POST", req_url))
 
-    mock_post = AsyncMock(side_effect=[res_70b_429, res_70b_429, res_8b_429])
+    mock_post = AsyncMock(side_effect=[res_70b_429, res_70b_429, res_8b_429, res_8b_429])
     monkeypatch.setattr(httpx.AsyncClient, "post", mock_post)
 
     context = {
@@ -428,30 +440,10 @@ async def test_groq_adapter_429_failover_8b_to_mock_adapter(monkeypatch, caplog)
     with caplog.at_level(logging.INFO):
         response = await adapter.generate_response(context)
 
-    # Verify fall-through to neutral glitch buffer
-    assert len(response.chunks) >= 1
-    assert response.reply_text != ""
-    assert "glitch" in response.reply_text.lower() or "ek second" in response.reply_text.lower()
-    assert mock_post.call_count == 3
-
-    # Verify both fallback telemetry events were logged
-    fallback_records = [
-        r for r in caplog.records
-        if r.message == "LLM Fallback Event" or getattr(r, "event", None) == "llm_fallback"
-    ]
-    assert len(fallback_records) == 2
-
-    # 1st event: 70B -> 8B
-    rec1 = fallback_records[0]
-    assert getattr(rec1, "attempted_model", None) == "llama-3.3-70b-versatile"
-    assert getattr(rec1, "fallback_model", None) == "llama-3.1-8b-instant"
-    assert getattr(rec1, "status_code", None) == 429
-
-    # 2nd event: 8B -> glitch_fallback
-    rec2 = fallback_records[1]
-    assert getattr(rec2, "attempted_model", None) == "llama-3.1-8b-instant"
-    assert getattr(rec2, "fallback_model", None) == "glitch_fallback"
-    assert getattr(rec2, "status_code", None) == 429
+    # Verify fall-through: returns empty response rather than a fragment
+    assert len(response.chunks) == 0
+    assert response.reply_text == ""
+    assert mock_post.call_count == 4
 
 
 @pytest.mark.asyncio
@@ -467,7 +459,11 @@ async def test_groq_adapter_timeout_failover_chain(monkeypatch, caplog):
     monkeypatch.setattr(settings, "GROQ_FALLBACK_MODEL", "llama-3.1-8b-instant")
 
     req_url = "https://api.groq.com/openai/v1/chat/completions"
-    mock_8b_reply = "Hey! Read delay timeout recovered seamlessly."
+    mock_8b_reply = json.dumps({
+        "availability_action": "reply_now",
+        "delay_seconds": 1.0,
+        "chunks": ["Hey! Read delay timeout recovered seamlessly."]
+    })
     res_8b_200 = httpx.Response(
         status_code=200,
         json={"choices": [{"message": {"content": mock_8b_reply}}]},

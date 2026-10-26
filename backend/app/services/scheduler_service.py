@@ -32,7 +32,7 @@ SPONTANEOUS_MESSAGES_BY_PERIOD = {
         "aaj ka workday kaisa ja raha hai? lunch hua tumhara?"
     ],
     "evening": [
-        "metro commute wrap ho gaya! finally heading home. any fun plans for the evening?",
+        "evening work wrap ho gaya! indiranagar me stroll lene nikli hoon thoda. tumhara kya scene hai abhi?",
         "indiranagar evenings under the streetlights with indie tracks on loop 🎧",
         "chai break time! just finished some work. tumhara scene kya hai abhi?"
     ],
@@ -599,15 +599,22 @@ class SchedulerService:
                 hours_spont = delta_spont / 3600.0 if delta_spont else None
                 time_spont_str = f"{int(hours_spont)}h ago" if hours_spont else "None today"
 
-                # Fetch last 20 messages in conversation
+                # Fetch last 3 messages in conversation for immediate context
                 recent_msgs_stmt = (
                     select(Message)
                     .where(Message.conversation_id == conv.id)
                     .order_by(Message.created_at.desc())
-                    .limit(20)
+                    .limit(3)
                 )
                 msgs_rev = (await s.execute(recent_msgs_stmt)).scalars().all()
                 recent_messages = [{"role": m.role, "content": m.content} for m in reversed(msgs_rev)]
+
+                # Check if there was an unanswered user message while she was sleeping or busy
+                had_unanswered_message = bool(last_msg and last_msg.role == "user" and hours_user >= 1.0)
+
+                # Fetch daily continuity notes
+                from backend.app.services.continuity_service import continuity_service
+                daily_notes = await continuity_service.get_daily_notes_for_time(s, rel.persona_id, now)
 
                 # Fetch memory facts
                 stored_facts = await memory_service.get_structured_facts(s, rel.id)
@@ -624,6 +631,8 @@ class SchedulerService:
                     "hours_since_unprompted": hours_spont,
                     "recent_messages": recent_messages,
                     "stored_facts": stored_facts,
+                    "daily_notes": daily_notes,
+                    "had_unanswered_message": had_unanswered_message,
                     "relationship_id": rel.id,
                     "user_id": rel.user_id,
                     "current_time": now

@@ -54,7 +54,7 @@ async def test_chat_first_encounter_and_conversation(client):
     assert res_msg1.status_code == 200
     data1 = res_msg1.json()
     assert data1["relationship_stage"] == "getting_to_know"
-    assert any(w in data1["content"] for w in ["latte", "Indiranagar", "Aanya", "Metro"])
+    assert any(w in data1["content"] for w in ["latte", "Indiranagar", "Aanya", "Bangalore"])
 
     # Message 2: Sincerity query
     res_ai_query = await client.post("/api/chat/send", json={

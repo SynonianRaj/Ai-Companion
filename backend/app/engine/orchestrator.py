@@ -1,6 +1,8 @@
 import asyncio
 import re
 import json
+import random
+import logging
 import httpx
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, Optional, List
@@ -12,12 +14,15 @@ from backend.app.core.config import settings
 from backend.app.db.models import (
     User, RelationshipState, Conversation, Message, SafetyEvent, OpenLoop
 )
-from backend.app.db.session import to_utc
+from backend.app.db.session import async_session_factory, to_utc
 from backend.app.safety.crisis_detector import crisis_detector
 from backend.app.safety.content_gate import content_gate
 from backend.app.services.clock_service import ClockService
 from backend.app.services.lifecycle_service import lifecycle_service
 from backend.app.services.memory_service import memory_service
+from backend.app.services.continuity_service import continuity_service
+from backend.app.services.presence_service import presence_service
+from backend.app.services.push_service import push_service
 from backend.app.engine.adapter import (
     LLMAdapterFactory, mock_adapter, LLMResponse, calculate_pacing, get_activity_for_time, _parse_llm_text_to_chunks
 )
@@ -26,6 +31,8 @@ from backend.app.engine.persona import (
     fix_male_grammar,
     get_ist_context
 )
+
+logger = logging.getLogger(__name__)
 
 
 class Orchestrator:
@@ -47,6 +54,32 @@ class Orchestrator:
         if relationship_id not in cls._locks:
             cls._locks[relationship_id] = asyncio.Lock()
         return cls._locks[relationship_id]
+
+    @classmethod
+    async def _schedule_in_process_delivery(cls, message_id: str, relationship_id: str, deliver_at: datetime) -> None:
+        """
+        In-process precision delivery worker: sleeps until deliver_at, then delivers.
+        If user is offline, triggers Web Push.
+        """
+        now = to_utc(ClockService.now())
+        wait_seconds = max(0.0, (deliver_at - now).total_seconds())
+        await asyncio.sleep(wait_seconds)
+        try:
+            async with async_session_factory() as session:
+                msg = await session.get(Message, message_id)
+                if msg and msg.status == "active":
+                    if not presence_service.is_online(relationship_id):
+                        rel = await session.get(RelationshipState, relationship_id)
+                        if rel:
+                            await push_service.send_push_notification(
+                                session=session,
+                                user_id=rel.user_id,
+                                relationship_id=rel.id,
+                                title="Aanya",
+                                body=msg.content[:100]
+                            )
+        except Exception as e:
+            logger.warning("In-process delivery worker exception: %s", e)
 
     @classmethod
     async def commit_delivered_side_effects(cls, session: AsyncSession, relationship_id: str) -> None:
@@ -385,9 +418,9 @@ class Orchestrator:
             in_active_flow = (last_msg_delta < 210) and not is_signoff
             delay_tier_override = "quick_signoff" if is_signoff else ("quick" if in_active_flow else None)
 
-            # Step 4: Soft-Cancel any pending assistant chunks from previous interrupted turn
-            cancel_stmt = (
-                update(Message)
+            # Step 4: Soft-Cancel pending assistant chunks & merge unreplied user messages
+            pending_stmt = (
+                select(Message)
                 .where(
                     and_(
                         Message.relationship_id == relationship.id,
@@ -396,10 +429,30 @@ class Orchestrator:
                         Message.deliver_at > now
                     )
                 )
-                .values(status="cancelled")
-                .execution_options(synchronize_session=False)
+                .order_by(Message.deliver_at.asc())
             )
-            await session.execute(cancel_stmt)
+            pending_asst_msgs = (await session.execute(pending_stmt)).scalars().all()
+            if pending_asst_msgs:
+                for p_msg in pending_asst_msgs:
+                    p_msg.status = "cancelled"
+
+                # Find unreplied user messages that arrived while reply was pending
+                prev_unreplied_stmt = (
+                    select(Message)
+                    .where(
+                        and_(
+                            Message.relationship_id == relationship.id,
+                            Message.role == "user",
+                            Message.status == "active",
+                            Message.created_at >= (pending_asst_msgs[0].created_at - timedelta(minutes=15))
+                        )
+                    )
+                    .order_by(Message.created_at.asc(), Message.sequence_order.asc())
+                )
+                prev_user_msgs = (await session.execute(prev_unreplied_stmt)).scalars().all()
+                prev_texts = [m.content for m in prev_user_msgs if m.content and m.content not in raw_chunks]
+                if prev_texts:
+                    combined_text = " ".join(prev_texts + raw_chunks).strip()
 
             # Step 5: City detection / One-shot awaiting_city_reply lifecycle
             fam_context = dict(relationship.familiarity_context or {})
@@ -473,6 +526,15 @@ class Orchestrator:
                 max_per_day=getattr(settings, "RATE_LIMIT_PER_DAY", 40)
             )
 
+            # Fetch today's continuity notes up to current time (Section C)
+            daily_notes = await continuity_service.get_daily_notes_for_time(session, relationship.persona_id, now)
+
+            # Availability state & propensity hints
+            ist_ctx = get_ist_context(now)
+            routine_state = ist_ctx.get("routine_state", "free")
+            propensity_dict = getattr(settings, "PROPENSITY_HINTS", {}).get(routine_state, {})
+            propensity_hint_str = ", ".join(f"{k}: {v}%" for k, v in propensity_dict.items())
+
             context = {
                 "user_message": combined_text,
                 "relationship_id": relationship.id,
@@ -485,6 +547,8 @@ class Orchestrator:
                 "is_ambiguous_distress": is_ambiguous_distress,
                 "memories": scoped_memories,
                 "stored_facts": structured_facts,
+                "daily_notes": daily_notes,
+                "propensity_hint": propensity_hint_str,
                 "recent_messages": recent_messages,
                 "is_ai_query": is_ai_query,
                 "user_name": user.username,
@@ -495,7 +559,7 @@ class Orchestrator:
             }
 
             if not is_allowed:
-                # DB rate limit exceeded -> seamlessly serve from offline mock engine
+                # DB rate limit exceeded -> serve from offline mock engine
                 active_adapter = mock_adapter
             else:
                 active_adapter = LLMAdapterFactory.get_adapter()
@@ -506,32 +570,28 @@ class Orchestrator:
 
             # Post-check validation and fact contradiction check
             recent_asst_msgs = [m.get("content", "") for m in recent_messages if m.get("role") in ("assistant", "model")]
-            _, sanitized_reply, _ = validate_and_sanitize_response(
-                response.reply_text,
-                recent_asst_msgs,
-                combined_text,
-                structured_facts
-            )
-            sanitized_reply = fix_male_grammar(sanitized_reply)
-            if sanitized_reply != response.reply_text:
-                response.reply_text = sanitized_reply
-                new_chunks = _parse_llm_text_to_chunks(sanitized_reply)
-                if new_chunks:
-                    response.chunks = new_chunks
-                    response.typing_delays = [max(0.8, min(2.5, round(len(c) * 0.028, 2))) for c in new_chunks]
+            sanitized_chunks = []
+            for c in response.chunks:
+                _, san, _ = validate_and_sanitize_response(str(c), recent_asst_msgs, combined_text, structured_facts)
+                san = fix_male_grammar(san)
+                if san.strip():
+                    sanitized_chunks.append(san.strip())
+            response.chunks = sanitized_chunks
+            response.reply_text = " ".join(sanitized_chunks)
 
             # Extract and store persona facts from assistant response
-            extracted_persona_facts = memory_service.extract_persona_facts(response.reply_text)
-            for p_fact in extracted_persona_facts:
-                await memory_service.store_memory(
-                    session=session,
-                    relationship_id=relationship.id,
-                    user_id=user.id,
-                    persona_id=relationship.persona_id,
-                    memory_type=p_fact["type"],
-                    content=p_fact["content"],
-                    importance=p_fact.get("importance", 0.6)
-                )
+            if response.reply_text:
+                extracted_persona_facts = memory_service.extract_persona_facts(response.reply_text)
+                for p_fact in extracted_persona_facts:
+                    await memory_service.store_memory(
+                        session=session,
+                        relationship_id=relationship.id,
+                        user_id=user.id,
+                        persona_id=relationship.persona_id,
+                        memory_type=p_fact["type"],
+                        content=p_fact["content"],
+                        importance=p_fact.get("importance", 0.6)
+                    )
 
             # If opening turn and user has no city, set awaiting_city_reply for next turn
             if relationship.relationship_stage == "encounter" and not user.city:
@@ -539,11 +599,55 @@ class Orchestrator:
                 relationship.familiarity_context = fam_context
                 flag_modified(relationship, "familiarity_context")
 
-            # Step 7: Calculate Authoritative Server Timestamps
-            read_delay = response.read_delay_seconds
-            seen_at = now + timedelta(seconds=read_delay)
+            # Step 7: Calculate Authoritative Server Timestamps & Availability Timing
+            action = getattr(response, "availability_action", "reply_now")
+            model_delay = getattr(response, "delay_seconds", 0.0)
 
-            # Step 8: Persist User Messages
+            # 1. Base Seen Delay (when she opens the chat on mobile)
+            if routine_state == "free":
+                seen_delay_sec = random.uniform(settings.SEEN_DELAY_FREE_MIN, settings.SEEN_DELAY_FREE_MAX)
+            elif routine_state == "working":
+                seen_delay_sec = random.uniform(settings.SEEN_DELAY_BUSY_MIN, settings.SEEN_DELAY_BUSY_MAX)
+            elif routine_state == "sleeping":
+                seen_delay_sec = random.uniform(settings.SEEN_DELAY_SLEEPING_MIN, settings.REPLY_DELAY_SLEEPING_MAX)
+            else:
+                seen_delay_sec = random.uniform(settings.SEEN_DELAY_FREE_MIN, settings.SEEN_DELAY_FREE_MAX)
+
+            # 2. Base Reply Delay
+            if action == "ignore_until_free":
+                delay_sec = 0.0
+            elif action == "reply_later":
+                if model_delay > 0:
+                    delay_sec = model_delay
+                else:
+                    if routine_state == "working":
+                        delay_sec = random.uniform(settings.REPLY_DELAY_BUSY_MIN, settings.REPLY_DELAY_BUSY_MAX)
+                    elif routine_state == "sleeping":
+                        delay_sec = random.uniform(settings.REPLY_DELAY_SLEEPING_MIN, settings.REPLY_DELAY_SLEEPING_MAX)
+                    else:
+                        delay_sec = random.uniform(settings.REPLY_DELAY_MODERATE_MIN, settings.REPLY_DELAY_MODERATE_MAX)
+            else:  # reply_now
+                # 5-10% chance of long gap even when free
+                if routine_state == "free" and random.random() < getattr(settings, "FREE_LONG_GAP_CHANCE", 0.08):
+                    delay_sec = random.uniform(settings.FREE_LONG_GAP_MIN, settings.FREE_LONG_GAP_MAX)
+                elif in_active_flow:
+                    delay_sec = random.uniform(1.2, 2.5)
+                else:
+                    delay_sec = random.uniform(settings.REPLY_DELAY_QUICK_MIN, settings.REPLY_DELAY_QUICK_MAX)
+
+            if pacing_mode == "turbo":
+                delay_sec = 0.0
+                seen_delay_sec = 0.0
+
+            # CRITICAL INVARIANT: seen_at <= deliver_at ALWAYS (If she replies, she must have seen it first)
+            has_reply = bool(action != "ignore_until_free" and response.chunks)
+            if has_reply:
+                if seen_delay_sec > delay_sec:
+                    seen_delay_sec = max(0.0 if pacing_mode == "turbo" else 0.5, delay_sec - (0.0 if pacing_mode == "turbo" else 0.5))
+
+            seen_at = now + timedelta(seconds=seen_delay_sec)
+
+            # Step 8: Persist User Messages (seen_at reflects when she actually opens chat)
             user_msg_records = []
             for idx, chunk in enumerate(raw_chunks):
                 u_rec = Message(
@@ -568,43 +672,68 @@ class Orchestrator:
             chunk_details = []
             cumulative_typing_offset = 0.0
 
-            for idx, chunk_text in enumerate(response.chunks):
-                typing_dur = response.typing_delays[idx] if idx < len(response.typing_delays) else 1.5
-                cumulative_typing_offset += typing_dur
-                chunk_deliver_at = seen_at + timedelta(seconds=cumulative_typing_offset)
+            if has_reply:
+                for idx, chunk_text in enumerate(response.chunks):
+                    typing_dur = 0.0 if pacing_mode == "turbo" else max(0.8, min(2.5, round(len(chunk_text) * 0.028, 2)))
+                    cumulative_typing_offset += typing_dur
+                    chunk_deliver_at = now + timedelta(seconds=delay_sec + cumulative_typing_offset)
 
-                is_glitch = "network thoda glitch" in chunk_text
-                meta_json = {
-                    "emotion": response.emotion_displayed,
-                    "typing_duration": typing_dur,
-                    "is_glitch_fallback": is_glitch
-                }
+                    meta_json = {
+                        "provider": getattr(response, "provider", "gemini"),
+                        "model": getattr(response, "model", "default"),
+                        "availability_action": action,
+                        "delay_seconds": delay_sec,
+                        "typing_duration": typing_dur
+                    }
 
-                asst_rec = Message(
-                    conversation_id=conversation.id,
-                    relationship_id=relationship.id,
-                    user_id=user.id,
-                    persona_id=relationship.persona_id,
-                    role="assistant",
-                    content=chunk_text,
-                    created_at=now,
-                    deliver_at=chunk_deliver_at,
-                    seen_at=seen_at,
-                    status="active",
-                    sequence_order=idx,
-                    metadata_json=meta_json
-                )
-                session.add(asst_rec)
-                chunk_details.append({
-                    "content": chunk_text,
-                    "deliver_at": chunk_deliver_at,
-                    "typing_duration_seconds": typing_dur,
-                    "sequence_order": idx
-                })
+                    asst_rec = Message(
+                        conversation_id=conversation.id,
+                        relationship_id=relationship.id,
+                        user_id=user.id,
+                        persona_id=relationship.persona_id,
+                        role="assistant",
+                        content=chunk_text,
+                        created_at=now,
+                        deliver_at=chunk_deliver_at,
+                        seen_at=seen_at,
+                        status="active",
+                        sequence_order=idx,
+                        metadata_json=meta_json
+                    )
+                    session.add(asst_rec)
+                    chunk_details.append({
+                        "content": chunk_text,
+                        "deliver_at": chunk_deliver_at,
+                        "typing_duration_seconds": typing_dur,
+                        "sequence_order": idx
+                    })
+
+                    # Schedule in-process precision delivery worker
+                    asyncio.create_task(cls._schedule_in_process_delivery(asst_rec.id, relationship.id, chunk_deliver_at))
+
+            logger.info(
+                "[LLM] Message turn completed: provider=%s model=%s action=%s delay=%.1fs seen_in=%.1fs chunks=%d",
+                getattr(response, "provider", "gemini"),
+                getattr(response, "model", "default"),
+                action,
+                delay_sec,
+                seen_delay_sec,
+                len(chunk_details)
+            )
 
             # Step 10: Persist Extracted Memories from User Message
+            memories_to_store = list(response.extracted_memories)
+            msg_lower = combined_text.lower()
+            if "interview" in msg_lower or "job" in msg_lower:
+                if not any("interview" in m.get("content", "").lower() for m in memories_to_store):
+                    memories_to_store.append({
+                        "type": "episodic",
+                        "content": f"User mentioned work/interview event: '{combined_text}'",
+                        "importance": 0.9
+                    })
+
             user_msg_ids = [u.id for u in user_msg_records]
-            for mem_data in response.extracted_memories:
+            for mem_data in memories_to_store:
                 await memory_service.store_memory(
                     session=session,
                     relationship_id=relationship.id,
@@ -645,26 +774,29 @@ class Orchestrator:
 
             await session.commit()
 
-            total_estimated_wait = read_delay + cumulative_typing_offset
+            total_estimated_wait = delay_sec + cumulative_typing_offset
             show_skip_wait = (
                 not in_active_flow
                 and delay_tier_override != "quick_signoff"
-                and response.delay_tier == "busy"
+                and (action == "reply_later" or getattr(response, "delay_tier", "") == "busy" or delay_sec >= 15.0)
                 and total_estimated_wait >= 5.0
             )
 
+            content_str = response.reply_text if getattr(response, "reply_text", None) else (" ".join(response.chunks) if response.chunks else "")
+
             return {
                 "role": "assistant",
-                "content": response.reply_text,
+                "content": content_str,
                 "chunks": response.chunks,
                 "chunk_details": chunk_details,
                 "crisis_handoff": None,
                 "relationship_stage": response.stage_transition or relationship.relationship_stage,
                 "lifecycle_status": relationship.lifecycle_status,
-                "emotion": response.emotion_displayed,
-                "persona_activity": response.persona_activity,
-                "delay_tier": response.delay_tier,
-                "read_delay_seconds": read_delay,
+                "emotion": getattr(response, "emotion_displayed", "neutral"),
+                "persona_activity": getattr(response, "persona_activity", "relaxing"),
+                "delay_tier": getattr(response, "delay_tier", "quick"),
+                "read_delay_seconds": delay_sec,
+                "delay_seconds": delay_sec,
                 "seen_at": seen_at,
                 "show_skip_wait": show_skip_wait
             }

@@ -228,3 +228,18 @@ class PushSubscription(Base):
     auth: Mapped[str] = mapped_column(String(255))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
+
+class PersonaDailyNote(Base):
+    """
+    Daily micro-journal for persona continuity (Section C - Option 1).
+    Stores 3 authentic daily notes generated once per calendar day (IST).
+    """
+    __tablename__ = "persona_daily_notes"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    persona_id: Mapped[str] = mapped_column(String(50), index=True)
+    date_str: Mapped[str] = mapped_column(String(10), index=True)  # YYYY-MM-DD
+    notes: Mapped[List[str]] = mapped_column(JSON, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+

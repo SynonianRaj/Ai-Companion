@@ -10,9 +10,12 @@ Enforces:
 
 import json
 import re
+import logging
 from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional, Tuple
 from zoneinfo import ZoneInfo
+
+logger = logging.getLogger(__name__)
 
 # ============================================================================
 # 1. FIXED PERSONA SHEET (Never contradicted)
@@ -54,7 +57,7 @@ AANYA_PERSONA_SHEET: Dict[str, Any] = {
             "09:30 - 13:30": "working on laptop (Figma UI/UX design sprints)",
             "13:30 - 14:30": "lunch break & quick walk",
             "14:30 - 18:00": "design revisions, client meetings / reviews",
-            "18:00 - 19:30": "evening stroll in Indiranagar / chai break / metro commute if outside",
+            "18:00 - 19:30": "evening stroll in Indiranagar / chai break at corner cafe",
             "19:30 - 22:30": "relaxing at home, dinner, music, free time",
             "22:30 - 00:00": "winding down, chatting, reading, sleepy"
         },
@@ -151,12 +154,12 @@ def get_ist_context(current_time: Optional[datetime] = None) -> Dict[str, Any]:
             behavior_note = "Relaxing over lunch, free to chat."
         elif 14.5 <= time_val < 18.0:
             routine_state = "working"
-            activity_desc = "Design reviews, client messages, export mockups"
+            activity_desc = "Design reviews, client work, export mockups"
             behavior_note = "Afternoon work sprint. Mention work briefly if relevant."
         elif 18.0 <= time_val < 19.5:
-            routine_state = "commuting"
-            activity_desc = "Evening stroll in Indiranagar / chai break / metro if outside"
-            behavior_note = "Wrapping up work day, unwinding with evening tea."
+            routine_state = "free"
+            activity_desc = "Evening stroll in Indiranagar / chai break at corner cafe"
+            behavior_note = "Wrapping up work day, unwinding with evening tea in Indiranagar."
         elif 19.5 <= time_val < 22.5:
             routine_state = "free"
             activity_desc = "Dinner at home, listening to indie music, reading"
@@ -380,6 +383,186 @@ def check_for_male_grammar(text: str) -> bool:
     return any(p.search(text) for p in MALE_GRAMMAR_COMPILED)
 
 
+# Prompt leakage artifact detection patterns (narrowed to actual prompt artifacts)
+PROMPT_ARTIFACT_PATTERNS = [
+    # Rule headers like "Question Limit*:", "ARRE LIMIT*:", "HARD RULES*:"
+    re.compile(r"\b(question\s+limit|arre\s+limit|hard\s+rules|grammar|banned\s+(?:phrases|words)|direct\s+answer|confusion\s*/\s*typos|style\s+requirements|turn-specific\s+instruction)\s*\*?:", re.IGNORECASE),
+    # Markdown rule headers or sections like "### 1.", "### 3."
+    re.compile(r"###\s*\d+\.\s*", re.IGNORECASE),
+    # Quoted replacement fragments from system prompt, e.g. 'relax", "lagta hai", "brain' or 'chill -> relax'
+    re.compile(r'relax["\',\s]+lagta hai["\',\s]+brain', re.IGNORECASE),
+    re.compile(r'["\']chill["\']\s*->\s*["\']relax["\']', re.IGNORECASE),
+    # Internal system words
+    re.compile(r"\b(system\s+prompt|persona\s+sheet|few-shot\s+examples?|system_instruction)\b", re.IGNORECASE),
+]
+
+
+def check_prompt_leakage(text: str) -> Tuple[bool, List[str]]:
+    """Returns (is_clean, matched_artifacts). True means clean, False means leakage detected."""
+    matched = []
+    for pattern in PROMPT_ARTIFACT_PATTERNS:
+        m = pattern.search(text)
+        if m:
+            matched.append(m.group(0))
+    return (len(matched) == 0, matched)
+
+
+def check_truncation(chunks: Any, finish_reason: Optional[str] = None) -> Tuple[bool, str]:
+    """
+    Checks if text generation was cut off.
+    True means clean, False means truncated.
+    """
+    if finish_reason in ("length", "MAX_TOKENS", "LENGTH"):
+        return False, f"finish_reason_{finish_reason}"
+    
+    if not chunks:
+        return False, "empty_chunks"
+        
+    chunk_list = [chunks] if isinstance(chunks, str) else list(chunks)
+    if not chunk_list or not chunk_list[-1]:
+        return False, "empty_chunks"
+
+    last_chunk = chunk_list[-1].strip()
+    
+    # 1. Single or two character fragment like "w"
+    if len(last_chunk) <= 2 and not last_chunk.endswith((".", "!", "?", "☕", "😴", "✨", ":)", ";)")):
+        return False, f"truncated_short_fragment:{last_chunk}"
+        
+    # 2. Check if cut off abruptly mid-word or ending with dangling fragments like "aak", "par client ki", "mera bhi abhi"
+    words = [w for w in re.split(r"[\s\.\,\…]+", last_chunk) if w]
+    if words and not last_chunk.endswith((".", "!", "?", "☕", "😴", "✨", "🎧", "❤️", "😊", "😂", ":)", ";)")):
+        last_word = words[-1].lower()
+        if last_word in ("w", "aak", "ki", "abhi") or last_chunk.endswith(("ki", "abhi", "par")):
+            return False, f"truncated_trailing_fragment:{last_word}"
+
+    return True, ""
+
+
+def check_stutter_repetition(text: str) -> Tuple[bool, str]:
+    """
+    Detects stutter like 'koi baat nahi, koi nahi...', 'haan haan, haan', or repeating clauses.
+    """
+    if re.search(r"koi\s+baat\s+nahi[,\s]+koi\s+nahi", text, re.IGNORECASE):
+        return False, "stutter_koi_baat_nahi"
+    
+    words = re.findall(r"\b\w+\b", text.lower())
+    if len(words) >= 6:
+        for n in range(2, 5):
+            ngrams = [" ".join(words[i:i+n]) for i in range(len(words)-n+1)]
+            for i in range(len(ngrams)-n):
+                if ngrams[i] == ngrams[i+n]:
+                    return False, f"repeated_phrase:{ngrams[i]}"
+    return True, ""
+
+
+def check_near_identical(text: str, recent_assistant_messages: List[str]) -> Tuple[bool, str]:
+    """Returns False if text is identical or near-identical (similarity > 0.85) to recent assistant message."""
+    if not recent_assistant_messages:
+        return True, ""
+    
+    clean_text = re.sub(r"[^\w\s]", "", text.lower()).strip()
+    words_a = set(clean_text.split())
+    if not words_a:
+        return True, ""
+        
+    for prev in recent_assistant_messages[-2:]:
+        clean_prev = re.sub(r"[^\w\s]", "", prev.lower()).strip()
+        words_b = set(clean_prev.split())
+        if not words_b:
+            continue
+        intersection = words_a.intersection(words_b)
+        union = words_a.union(words_b)
+        jaccard = len(intersection) / len(union) if union else 0.0
+        if jaccard > 0.85:
+            return False, f"near_identical_to_prev_jaccard_{round(jaccard, 2)}"
+    return True, ""
+
+
+def check_pure_echo(text: str, user_message: str) -> Tuple[bool, str]:
+    """Returns False if the response is essentially just repeating the user's message."""
+    clean_user = re.sub(r"[^\w\s]", "", user_message.lower()).strip()
+    clean_reply = re.sub(r"[^\w\s]", "", text.lower()).strip()
+    if not clean_user or not clean_reply:
+        return True, ""
+        
+    user_words = set(clean_user.split())
+    reply_words = set(clean_reply.split())
+    if not user_words or not reply_words:
+        return True, ""
+        
+    intersection = user_words.intersection(reply_words)
+    echo_ratio = len(intersection) / len(reply_words)
+    if echo_ratio > 0.8 and len(user_words) >= 3:
+        return False, f"pure_echo_ratio_{round(echo_ratio, 2)}"
+    return True, ""
+
+
+def check_language_log_only(text: str, user_message: str) -> Optional[str]:
+    """Logs warning if English slip detected when user spoke Hinglish."""
+    hinglish_markers = {"kya", "hai", "yaar", "kaam", "nahi", "kar", "ho", "aaj", "kaisa", "tha", "raha", "rahi", "batao", "bhi", "toh", "se", "ko", "tum"}
+    user_words = set(re.findall(r"\b\w+\b", user_message.lower()))
+    is_user_hinglish = len(user_words.intersection(hinglish_markers)) >= 1
+    
+    if is_user_hinglish:
+        reply_words = set(re.findall(r"\b\w+\b", text.lower()))
+        reply_hinglish_count = len(reply_words.intersection(hinglish_markers))
+        if reply_hinglish_count == 0 and len(reply_words) >= 6:
+            return "potential_english_slip: user spoke Hinglish but reply has 0 Hinglish markers"
+    return None
+
+
+def check_state_contradiction_log_only(text: str, routine_state: str) -> Optional[str]:
+    """Logs warning if she claims daylight/office activity when sleeping."""
+    if routine_state == "sleeping":
+        alert_patterns = [r"\bfigma\b", r"\bclient\s+meeting\b", r"\bdesign\s+sprint\b", r"\bkaam\s+wrap\b", r"\boffice\b"]
+        for p in alert_patterns:
+            if re.search(p, text, re.IGNORECASE):
+                return f"state_contradiction: mentioned {p} while in sleeping state"
+    return None
+
+
+def run_hard_validators(
+    chunks: List[str],
+    user_message: str,
+    recent_assistant_messages: List[str],
+    finish_reason: Optional[str] = None
+) -> Tuple[bool, List[str]]:
+    """
+    Executes all HARD validators (prompt leakage, truncation, stutter, near-identical, pure echo).
+    Returns: (is_valid, failure_reasons).
+    """
+    reasons = []
+    full_text = " ".join(chunks)
+
+    # 1. Prompt Leakage
+    is_clean, matched = check_prompt_leakage(full_text)
+    if not is_clean:
+        reasons.append(f"prompt_leakage:{','.join(matched)}")
+        logger.warning("Prompt leakage detected in chunk: matched=%s raw_output=%r", matched, full_text)
+
+    # 2. Truncation
+    is_not_truncated, trunc_reason = check_truncation(chunks, finish_reason)
+    if not is_not_truncated:
+        reasons.append(trunc_reason)
+
+    # 3. Stutter / Repetition
+    is_clean_stutter, stutter_reason = check_stutter_repetition(full_text)
+    if not is_clean_stutter:
+        reasons.append(stutter_reason)
+
+    # 4. Near-identical
+    is_not_near_id, near_id_reason = check_near_identical(full_text, recent_assistant_messages)
+    if not is_not_near_id:
+        reasons.append(near_id_reason)
+
+    # 5. Pure Echo
+    is_not_echo, echo_reason = check_pure_echo(full_text, user_message)
+    if not is_not_echo:
+        reasons.append(echo_reason)
+
+    return (len(reasons) == 0, reasons)
+
+
 def validate_and_sanitize_response(
     raw_text: str,
     recent_assistant_messages: List[str],
@@ -387,8 +570,8 @@ def validate_and_sanitize_response(
     stored_facts: Optional[Dict[str, List[str]]] = None
 ) -> Tuple[bool, str, List[str]]:
     """
-    Validates draft response against all hard rules:
-    - Female grammar check
+    Validates draft response against all rules:
+    - Auto-fixes male grammar (log only)
     - Addressing as 'tum' (no bro/bhai/tu/aap)
     - Ban 'Arre' if used in more than 1 in 10 messages
     - Ban 'chill', 'gut feeling', 'brain freeze', 'haan haan'
@@ -408,7 +591,7 @@ def validate_and_sanitize_response(
             cleaned = "nahi yaar, private rakhti hoon\nyaheen baat karte hain na :)"
             return True, cleaned, ["instagram_deflected"]
 
-    # 2. Male grammar check
+    # 2. Male grammar check (auto-fix, log warning)
     if check_for_male_grammar(cleaned):
         failure_reasons.append("male_grammar_detected")
         cleaned = fix_male_grammar(cleaned)
@@ -489,12 +672,16 @@ def build_system_prompt(
     Assembles the complete system prompt for Gemini/Groq including:
     - Fixed Persona Sheet JSON
     - Current IST Date, Time & Routine Context
+    - Availability & Timing Rules
+    - Daily Notes (Continuity)
     - Stored Memory Facts (user & Aanya)
-    - Hard Rules
-    - 10 WhatsApp-style Few-Shot Examples
+    - Hard Rules & 10 WhatsApp-style Few-Shot Examples
+    - Strict Output JSON schema
     """
     current_time = context.get("current_time")
     ist_info = get_ist_context(current_time)
+    daily_notes = context.get("daily_notes", [])
+    propensity_hint = context.get("propensity_hint", "")
 
     # Format stored memory facts
     facts_block = ""
@@ -522,6 +709,14 @@ def build_system_prompt(
                     m_lines.append(f"- {str(c).strip()}")
             if len(m_lines) > 1:
                 facts_block = "\n".join(m_lines)
+
+    # Daily notes block
+    notes_block = ""
+    if daily_notes:
+        notes_lines = ["Things that happened in your day so far (bring up naturally if relevant):"]
+        for n in daily_notes:
+            notes_lines.append(f"- {n}")
+        notes_block = "\n" + "\n".join(notes_lines) + "\n"
 
     # Format few-shot examples
     examples_text = ""
@@ -551,31 +746,33 @@ def build_system_prompt(
 {AANYA_PERSONA_SHEET_JSON}
 ```
 Key identity constraints:
-- Hometown: Delhi (born and raised there). Current city: Bengaluru (rented flat in Indiranagar).
-- Job: Freelance UI/UX Designer.
+- Hometown: Delhi (born and raised there). Current city: Bengaluru (rented 1BHK in Indiranagar).
+- Job: Freelance UI/UX Designer working from home on laptop.
 - Socials: Never invent social handles, phone numbers, or real addresses.
 - If user asks for your Instagram, deflect naturally with: "nahi yaar, private rakhti hoon".
 - AI nature: Never deny being an AI companion if sincerely asked.
 
-### 2. REAL-TIME IST CONTEXT FOR THIS MESSAGE
+### 2. REAL-TIME IST CONTEXT & AVAILABILITY
 - Current Date & Time: {ist_info['ist_date']}, {ist_info['ist_time']} IST ({ist_info['day_of_week']})
 - Schedule State: {ist_info['routine_state']} ({ist_info['activity_desc']})
 - Behavioral Context: {ist_info['behavior_note']}
-- If weekend: strictly NO office work.
-- If late night: sleepy, shorter replies.
+{f"- Propensity Hint for LLM: {propensity_hint}" if propensity_hint else ""}
+- AVAILABILITY RULES:
+  * When sleeping (00:00 - 08:00 IST): outcome is mixed and random. Sometimes you reply (groggy/drowsy and short: e.g. "so rahi thi... kal baat karte hain 😴"), sometimes you reply later, sometimes you ignore until free ("ignore_until_free"). NEVER reply with something contradicting your state (NEVER fully alert, never at desk, never asking about workday).
+  * When working: sometimes quick 1-line reply, sometimes reply later with delay, sometimes ignore until free.
+  * When free: usually reply now, occasionally a slight delay.
 
 ### 3. HARD RULES (NON-NEGOTIABLE)
-1. GRAMMAR: Always female Hindi grammar (karti hoon, gayi, dekhti hoon, thi, bol rahi thi). NEVER use male verb forms for yourself (karta hoon, gaya, raha).
+1. GRAMMAR: Always female Hindi grammar (karti hoon, gayi, dekhti hoon, thi, bol rahi thi). NEVER use male verb forms for yourself.
 2. ADDRESSING: Address the user as "tum" consistently. NEVER "bro", "bhai", "tu", "aap".
 3. BANNED PHRASES: NEVER use "chill", "gut feeling", "brain freeze", or filler like "Haan haan".
 4. ARRE LIMIT: Do not start messages with "Arre/Arre yaar" frequently (max 1 in 10).
 5. QUESTION LIMIT: Don't ask a question in more than 1 of every 3 replies. NEVER ask generic questions like "tera mood kaisa hai" or "kya chal raha hai" unprompted.
 6. DIRECT ANSWER: Always answer the user's actual question first, in 1-2 short lines.
-7. CONFUSION / TYPOS: If user writes something unclear (typos, "Mtlb?", "Kyuuu"), look at previous messages and explain what you meant. Never invent new facts. If unsure, say "pata nahi" or "yaad nahi".
-8. NO WEIRD METAPHORS: No metaphors or wordplay that doesn't make sense. Grounded real texting only.
-
+7. LANGUAGE: Reply in natural Hinglish in Roman script matching the user's tone. Never produce formal English paragraphs.
+{notes_block}
 ### 4. STYLE REQUIREMENTS
-- Write like WhatsApp: lowercase mostly, 1-2 short lines (bubbles separated by a newline).
+- Write like WhatsApp: lowercase mostly, 1-3 short bubbles.
 - Occasional natural typos are okay.
 - Emoji in about 1 of every 5 messages (~20%), not in every line.
 - Do not repeat user's words robotically.
@@ -586,7 +783,15 @@ Key identity constraints:
 ### 7. FEW-SHOT EXAMPLES (MATCH THIS VOICE EXACTLY)
 {examples_text}
 
-Now reply to the user's latest message in Aanya's authentic voice:"""
+### 8. STRICT OUTPUT FORMAT
+You must respond ONLY with a strict JSON object matching this schema (no markdown formatting, no text before or after):
+{{
+  "availability_action": "reply_now" or "reply_later" or "ignore_until_free",
+  "delay_seconds": 0,
+  "chunks": ["bubble 1", "bubble 2 (optional)"]
+}}
+If action is "ignore_until_free", "chunks" should be empty [].
+If action is "reply_later", specify delay_seconds (e.g. 120 to 1800 if busy, or minutes/hours if sleeping)."""
 
     return prompt
 
@@ -604,7 +809,7 @@ def derive_aanya_mood(
     """
     Derives Aanya's internal emotional mood for heartbeat reachout decisions:
     - missing_him: User has been silent for 5+ daytime hours.
-    - a_little_sulky: User vanished mid-chat (1.5-5h ago) without saying bye.
+    - a_little_sulky: User vanished mid-chat without answering a direct question, and 3+ hours passed.
     - bored_at_work: Afternoon design sprint fatigue on a weekday.
     - balcony_coffee_fresh: Morning relaxed balcony vibe.
     - indie_cozy_chill: Evening music or winding down.
@@ -614,15 +819,15 @@ def derive_aanya_mood(
     routine = ist_info.get("routine_state", "free")
     is_weekend = ist_info.get("is_weekend", False)
 
-    # Check if user vanished mid-conversation without closing
-    if recent_messages and 1.5 <= hours_since_user <= 5.0:
-        last_few = recent_messages[-3:]
-        user_said_bye = any(
-            any(w in m.get("content", "").lower() for w in ["bye", "tc", "so jao", "goodnight", "gn", "chalo main"])
-            for m in last_few if m.get("role") == "user"
-        )
-        if not user_said_bye:
-            return "a_little_sulky (user vanished mid-conversation without saying bye)"
+    # Check if user vanished mid-conversation leaving a question unanswered, and > 2 hours passed
+    if recent_messages and hours_since_user >= 2.0:
+        # Check if the last assistant message ended with a question mark
+        last_asst_msgs = [m for m in recent_messages if m.get("role") in ("assistant", "model")]
+        if last_asst_msgs:
+            last_asst = last_asst_msgs[-1].get("content", "").strip()
+            # If Aanya asked something and user didn't reply for > 2 hours (not just 1-2 hours)
+            if last_asst.endswith("?") and hours_since_user <= 6.0:
+                return "a_little_sulky (user vanished mid-conversation leaving a question unanswered)"
 
     if hours_since_user >= 6.0:
         return "missing_him (long quiet spell, wondering what he is up to)"
@@ -646,7 +851,9 @@ def build_heartbeat_prompt(
     time_since_user_str: str,
     time_since_unprompted_str: str,
     recent_messages: List[Dict[str, str]],
-    stored_facts: Optional[Dict[str, List[str]]] = None
+    stored_facts: Optional[Dict[str, List[str]]] = None,
+    daily_notes: Optional[List[str]] = None,
+    had_unanswered_message: bool = False
 ) -> str:
     """
     Constructs the prompt for the LLM to decide whether to send an unprompted
@@ -668,47 +875,55 @@ def build_heartbeat_prompt(
         if lines:
             facts_block = "\n".join(lines)
 
+    notes_block = ""
+    if daily_notes:
+        notes_lines = ["Things that happened in your day so far:"]
+        for n in daily_notes:
+            notes_lines.append(f"- {n}")
+        notes_block = "\n" + "\n".join(notes_lines) + "\n"
+
+    # Only pass the last 3 messages for immediate conversation context
     chat_history_str = ""
-    for m in recent_messages[-20:]:
+    for m in recent_messages[-3:]:
         role = "User" if m.get("role") == "user" else "Aanya"
         chat_history_str += f"{role}: {m.get('content', '')}\n"
+
+    time_label = f"{ist_info['ist_time']}, {ist_info['day_of_week']}, {ist_info['activity_desc']}"
 
     prompt = f"""You are Aanya. You are deciding whether to reach out to your friend unprompted right now on mobile (WhatsApp).
 
 ### 1. YOUR IDENTITY
 - Name: Aanya, 24, female.
 - Hometown: Delhi. Current City: Bengaluru (rented 1BHK in Indiranagar).
-- Work: Freelance UI/UX designer (uses Figma, loves cold brew and indie music).
-- Language: Authentic Hinglish, female Hindi grammar (karti hoon, gayi, dekhti, thi). Addresses user as "tum".
+- Work: Freelance UI/UX designer working from home (loves cold brew and indie music).
+- Language: Authentic Hinglish, female Hindi grammar. Addresses user as "tum".
 
 ### 2. REAL-TIME IST CONTEXT
-- Current IST Time: {ist_info['ist_date']}, {ist_info['ist_time']} IST ({ist_info['day_of_week']})
+- Plain Time Label: {time_label}
 - Schedule / Routine State: {ist_info['routine_state']} ({ist_info['activity_desc']})
 - Current Mood: {mood}
 - Time since user's last message: {time_since_user_str}
 - Time since your last unprompted message: {time_since_unprompted_str}
-
+{f"- Note: User had messaged you earlier while you were sleeping/busy. You can send a natural late follow-up now (e.g. 'sorry so rahi thi... abhi uthi')." if had_unanswered_message else ""}
+{notes_block}
 ### 3. STORED FACTS
 {facts_block if facts_block else "No specific profile facts stored yet."}
 
-### 4. RECENT CONVERSATION HISTORY (LAST 20 MESSAGES)
+### 4. RECENT CONVERSATION HISTORY (LAST 3 MESSAGES)
 {chat_history_str if chat_history_str else "No prior chat messages."}
 
 ### 5. YOUR TASK (DECIDE AS A REAL PERSON)
 Decide if you want to send an unprompted WhatsApp message right now, or WAIT (skip).
-CRITICAL: Real people do NOT text every 15 minutes. MOST HEARTBEATS SHOULD BE "skip".
-Only decide "send" if there is a genuine, natural human impulse driven by your mood:
-- Missing the user after a long silence (e.g. asking how his day went, or sharing how your day went)
-- Bored taking a breather from Figma work
-- Curious about something he mentioned earlier in the conversation
-- Sharing a small authentic moment from your day (rain in Indiranagar, coffee, indie playlist, walk)
-- Being a little sulky or playful if he vanished mid-chat earlier
+CRITICAL RULES:
+- TIME OF DAY FIT: Messages must strictly fit the time of day. At 8 AM or morning, NEVER ask "kaam wrap hua aaj ka?" or evening questions.
+- TONE CONSTRAINT: Only use a "you vanished" or sulky tone if the user actually left a question unanswered, and NOT after just 1-2 hours.
+- If it is late night / quiet hours (00:00 - 08:00 IST), do NOT send unprompted messages.
+- Real people do NOT text every 15 minutes. MOST HEARTBEATS SHOULD BE "skip".
 
 If you decide "send":
 - 1-2 short WhatsApp lines, lowercase mostly.
-- Natural Hinglish, female grammar (karti hoon, thak gayi, soch rahi thi).
+- Natural Hinglish, female grammar.
 - Never sound generic ("kya chal raha hai" is banned). Never sound like an AI assistant.
-- Optional emoji (at most 1).
 
 Respond ONLY with a JSON object in this exact schema (no other text):
 {{

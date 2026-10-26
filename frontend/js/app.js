@@ -536,6 +536,11 @@ async function flushUserBurst() {
 
 function scheduleChunkDeliveries(chunkDetails, userBurst) {
   clearActiveChunkTimeouts();
+  if (!chunkDetails || chunkDetails.length === 0) {
+    removeTypingIndicator();
+    hideSkipWaitButton();
+    return;
+  }
 
   chunkDetails.forEach((chunk, idx) => {
     const deliverTime = new Date(chunk.deliver_at).getTime();

@@ -1,4 +1,6 @@
 import re
+import json
+import asyncio
 import random
 import time
 import logging
@@ -19,6 +21,9 @@ from backend.app.engine.persona import (
     validate_and_sanitize_response,
     fix_male_grammar,
     check_for_male_grammar,
+    run_hard_validators,
+    check_language_log_only,
+    check_state_contradiction_log_only,
     ARRE_OPENER_REGEX,
     INSTAGRAM_QUERY_REGEX
 )
@@ -26,9 +31,55 @@ from backend.app.engine.persona import (
 logger = logging.getLogger(__name__)
 
 
+def strip_thinking_tags(text: str) -> str:
+    """Strips <think>...</think> and unclosed <think> blocks from reasoning models (e.g. Qwen)."""
+    if not text:
+        return ""
+    # Strip complete <think>...</think> blocks
+    cleaned = re.sub(r"<think>[\s\S]*?</think>", "", text, flags=re.IGNORECASE)
+    # Strip unclosed <think>... blocks if output was cut
+    cleaned = re.sub(r"<think>[\s\S]*$", "", cleaned, flags=re.IGNORECASE)
+    return cleaned.strip()
+
+
+def parse_llm_json_response(raw_text: str) -> Optional[Dict[str, Any]]:
+    """Extracts JSON object from raw LLM output, handling markdown code fences."""
+    if not raw_text:
+        return None
+    cleaned = strip_thinking_tags(raw_text).strip()
+    if cleaned.startswith("```json"):
+        cleaned = cleaned[7:]
+    elif cleaned.startswith("```"):
+        cleaned = cleaned[3:]
+    if cleaned.endswith("```"):
+        cleaned = cleaned[:-3]
+    cleaned = cleaned.strip()
+
+    try:
+        data = json.loads(cleaned)
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        # Fallback regex extraction if model added text around json
+        m = re.search(r"\{[\s\S]*\}", cleaned)
+        if m:
+            try:
+                data = json.loads(m.group(0))
+                if isinstance(data, dict):
+                    return data
+            except Exception:
+                pass
+    return None
+
+
 class LLMResponse(BaseModel):
-    reply_text: str
+    reply_text: str = ""
     chunks: List[str] = []
+    availability_action: str = "reply_now"  # "reply_now", "reply_later", "ignore_until_free"
+    delay_seconds: float = 0.0
+    seen_delay_seconds: float = 2.0
+    provider: str = "mock"
+    model: str = "canned"
     stage_transition: Optional[str] = None
     extracted_memories: List[Dict[str, Any]] = []
     extracted_open_loops: List[str] = []
@@ -79,74 +130,31 @@ def get_activity_for_time(
 ) -> Tuple[str, str, float]:
     """
     Returns (activity_name, delay_tier, base_read_delay_seconds).
+    Derives canonical activity directly from get_ist_context() (single source of truth).
     Tiers: 'quick' (1.5-2.2s), 'moderate' (4.0-5.5s), 'busy' (10-14s).
     Vulnerable user messages ALWAYS override to 'quick' tier.
-    Uses cross-process deterministic SHA-256 slotting over 30-minute intervals.
     """
     if is_vulnerable:
         return ("Listening closely and here for you", "quick", 1.8)
 
-    try:
-        ist_tz = ZoneInfo("Asia/Kolkata")
-    except Exception:
-        ist_tz = timezone.utc
+    ist_ctx = get_ist_context(current_time)
+    activity_name = ist_ctx["activity_desc"]
+    routine_state = ist_ctx["routine_state"]
 
-    ist_time = current_time.astimezone(ist_tz) if current_time.tzinfo else current_time.replace(tzinfo=timezone.utc).astimezone(ist_tz)
-    hour = ist_time.hour
-    minute = ist_time.minute
-    time_float = hour + minute / 60.0
-    slot_idx = (hour * 60 + minute) // 30
-    date_str = ist_time.strftime("%Y-%m-%d")
-
-    # Cross-process deterministic SHA-256 roll
-    rel_key = relationship_id or "default_user_session"
-    seed_str = f"{rel_key}:{date_str}:{slot_idx}"
-    digest = hashlib.sha256(seed_str.encode("utf-8")).hexdigest()
-    roll = int(digest[:8], 16) % 100
-
-    if 8.0 <= time_float < 10.5:
-        # Morning (balcony tea, indie songs, breakfast)
-        if roll < 60:
-            return ("Morning chai & listening to indie songs", "quick", 2.0)
-        else:
-            return ("Getting ready & breakfast run", "moderate", 4.0)
-    elif 10.5 <= time_float < 13.0:
-        # Late morning
-        if roll < 35:
-            return ("Free at desk & catching up on phone", "quick", 1.8)
-        elif roll < 80:
-            return ("Working on laptop at a cafe", "moderate", 4.5)
-        else:
-            return ("In a team discussion / deep focus", "busy", 12.0)
-    elif 13.0 <= time_float < 14.5:
-        # Lunch
-        if roll < 50:
-            return ("Lunch break with friends at 12th Main", "moderate", 5.0)
-        else:
-            return ("Post-lunch casual stroll & coffee", "quick", 2.2)
-    elif 14.5 <= time_float < 17.5:
-        # Afternoon
-        if roll < 35:
-            return ("Quick tea break & lounging", "quick", 1.8)
-        elif roll < 75:
-            return ("Reviewing studio work & sketches", "moderate", 4.5)
-        else:
-            return ("In a client critique meeting", "busy", 12.0)
-    elif 17.5 <= time_float < 20.0:
-        # Evening
-        if roll < 65:
-            return ("Evening stroll in Indiranagar & tea", "quick", 2.0)
-        else:
-            return ("Metro commute & evening errands", "moderate", 5.0)
-    elif 20.0 <= time_float < 23.0:
-        # Night
-        if roll < 75:
-            return ("Relaxing at home with indie playlist 🎧", "quick", 2.0)
-        else:
-            return ("Dinner & winding down", "moderate", 4.0)
+    if routine_state == "working":
+        delay_tier = "busy"
+        base_delay = 5.0
+    elif routine_state == "free":
+        delay_tier = "quick"
+        base_delay = 2.0
+    elif routine_state in ("sleeping", "winding_down"):
+        delay_tier = "moderate"
+        base_delay = 4.0
     else:
-        # 23:00 to 08:00 (Late Night)
-        return ("Winding down with late night playlist 🎧", "moderate", 5.0)
+        delay_tier = "quick"
+        base_delay = 2.0
+
+    return (activity_name, delay_tier, base_delay)
 
 
 def calculate_pacing(
@@ -430,7 +438,7 @@ class MockTemplateLLMAdapter(BaseLLMAdapter):
         ],
         [
             "Achha suno, weekend pe kya karna pasand hai tumhe usually?",
-            "Chilling at home ya exploring cafes with friends?"
+            "Ghar pe aaram ya exploring cafes with friends?"
         ]
     ]
 
@@ -1100,9 +1108,8 @@ def _parse_llm_text_to_chunks(raw_text: str) -> List[str]:
 class GroqLLMAdapter(BaseLLMAdapter):
     """
     Remote adapter using Groq Cloud with Dual Remote Fallback Chain.
-    Primary: qwen/qwen3.8-27b (fast non-reasoning)
-    Secondary fallback: openai/gpt-oss-20b (reasoning_effort: low, 600 tokens)
-    Tertiary fallback: Neutral glitch buffer
+    Primary: qwen/qwen3.8-27b
+    Secondary fallback: openai/gpt-oss-20b
     """
 
     async def _call_model(
@@ -1111,18 +1118,19 @@ class GroqLLMAdapter(BaseLLMAdapter):
         model: str,
         messages: List[Dict[str, str]],
         headers: Dict[str, str],
-        max_tokens: int = 300,
+        max_tokens: int = 600,
         reasoning_effort: Optional[str] = None
-    ) -> Tuple[Optional[str], Optional[int], Optional[str], float]:
+    ) -> Tuple[Optional[str], Optional[str], Optional[int], Optional[str], float]:
         """
-        Attempts to call Groq API for a given model.
-        Returns: (raw_content, status_code, failure_reason, latency_ms)
+        Attempts to call Groq API for a given model with JSON format.
+        Returns: (raw_content, finish_reason, status_code, failure_reason, latency_ms)
         """
         payload: Dict[str, Any] = {
             "model": model,
             "messages": messages,
             "temperature": getattr(settings, "LLM_TEMPERATURE", 0.8),
-            "max_tokens": max_tokens
+            "max_tokens": max_tokens,
+            "response_format": {"type": "json_object"}
         }
         if reasoning_effort:
             payload["reasoning_effort"] = reasoning_effort
@@ -1134,25 +1142,29 @@ class GroqLLMAdapter(BaseLLMAdapter):
             if res.status_code == 200:
                 try:
                     data = res.json()
-                    content = data["choices"][0]["message"].get("content")
+                    choice = data["choices"][0]
+                    content = choice["message"].get("content")
+                    finish_reason = choice.get("finish_reason")
                     if not content or not content.strip():
-                        return None, res.status_code, "empty_content", latency_ms
-                    return content, 200, None, latency_ms
+                        return None, finish_reason, res.status_code, "empty_content", latency_ms
+                    clean_content = strip_thinking_tags(content)
+                    return clean_content, finish_reason, 200, None, latency_ms
                 except Exception as parse_err:
-                    return None, res.status_code, f"json_parse_error: {parse_err}", latency_ms
+                    return None, None, res.status_code, f"json_parse_error: {parse_err}", latency_ms
             else:
+                logger.warning("Groq API error (%s) on model=%s: %s", res.status_code, model, res.text[:200])
                 reason = f"http_{res.status_code}"
                 if res.status_code == 429:
                     reason = "rate_limit_exceeded"
                 elif res.status_code == 503:
                     reason = "service_unavailable"
-                return None, res.status_code, reason, latency_ms
+                return None, None, res.status_code, reason, latency_ms
         except httpx.TimeoutException:
             latency_ms = round((time.perf_counter() - start_t) * 1000, 2)
-            return None, None, "timeout", latency_ms
+            return None, None, None, "timeout", latency_ms
         except Exception as exc:
             latency_ms = round((time.perf_counter() - start_t) * 1000, 2)
-            return None, None, f"request_error: {exc}", latency_ms
+            return None, None, None, f"request_error: {exc}", latency_ms
 
     async def generate_response(self, context: Dict[str, Any]) -> LLMResponse:
         current_time = context.get("current_time", datetime.now(timezone.utc))
@@ -1162,6 +1174,8 @@ class GroqLLMAdapter(BaseLLMAdapter):
         delay_tier_override = context.get("delay_tier_override")
         is_vulnerable = is_emotionally_vulnerable(user_message)
         activity_name, delay_tier, _ = get_activity_for_time(current_time, is_vulnerable, relationship_id=relationship_id)
+        ist_ctx = get_ist_context(current_time)
+        routine_state = ist_ctx.get("routine_state", "free")
 
         if not getattr(settings, "GROQ_API_KEY", None):
             return await mock_adapter.generate_response(context)
@@ -1178,9 +1192,8 @@ class GroqLLMAdapter(BaseLLMAdapter):
             allow_arre=allow_arre
         )
         messages = [{"role": "system", "content": system_content}]
-        recent_bubbles = context.get("recent_messages", [])[-4:]
         for m in recent_bubbles:
-            role = "assistant" if m.get("role") == "assistant" else "user"
+            role = "assistant" if m.get("role") in ("assistant", "model") else "user"
             content = m.get("content", "")
             if content:
                 messages.append({"role": role, "content": content})
@@ -1191,8 +1204,8 @@ class GroqLLMAdapter(BaseLLMAdapter):
 
         primary_model = getattr(settings, "GROQ_MODEL", "qwen/qwen3.8-27b") or "qwen/qwen3.8-27b"
         fallback_model = getattr(settings, "GROQ_FALLBACK_MODEL", "openai/gpt-oss-20b") or "openai/gpt-oss-20b"
-        primary_max_tokens = getattr(settings, "GROQ_MAX_TOKENS", 300)
-        fallback_max_tokens = getattr(settings, "GROQ_FALLBACK_MAX_TOKENS", 600)
+        primary_max_tokens = getattr(settings, "GROQ_MAX_TOKENS", 600)
+        fallback_max_tokens = getattr(settings, "GROQ_FALLBACK_MAX_TOKENS", 800)
 
         headers = {
             "Authorization": f"Bearer {settings.GROQ_API_KEY}",
@@ -1200,113 +1213,142 @@ class GroqLLMAdapter(BaseLLMAdapter):
             "User-Agent": "AI-Companion/1.0"
         }
 
+        last_err = {"status_code": None, "reason": None, "latency_ms": 0.0}
+
+        async def _attempt_pipeline(model_name: str, max_toks: int, is_retry: bool = False) -> Optional[LLMResponse]:
+            content, finish_reason, status_code, reason, latency_ms = await self._call_model(
+                client, model_name, messages, headers, max_tokens=max_toks
+            )
+            if not content:
+                last_err["status_code"] = status_code
+                last_err["reason"] = reason
+                last_err["latency_ms"] = latency_ms
+                if status_code == 429:
+                    await asyncio.sleep(2.0)
+                return None
+
+            parsed = parse_llm_json_response(content)
+            if not parsed or not isinstance(parsed, dict):
+                logger.warning("Groq JSON parsing failed on model=%s. Raw output: %s", model_name, content[:200])
+                return None
+
+            action = str(parsed.get("availability_action", "reply_now")).strip()
+            raw_chunks = parsed.get("chunks", [])
+            delay_sec = float(parsed.get("delay_seconds", 0.0) or 0.0)
+
+            if action == "ignore_until_free":
+                return LLMResponse(
+                    reply_text="",
+                    chunks=[],
+                    availability_action="ignore_until_free",
+                    delay_seconds=0.0,
+                    provider="groq",
+                    model=model_name,
+                    persona_activity=activity_name,
+                    delay_tier="quick"
+                )
+
+            # Sanitize chunks & grammar
+            sanitized_chunks = []
+            for c in raw_chunks:
+                _, san, _ = validate_and_sanitize_response(str(c), recent_asst_msgs, user_message, context.get("stored_facts"))
+                san = fix_male_grammar(san)
+                if san.strip():
+                    sanitized_chunks.append(san.strip())
+
+            # Run HARD validators
+            is_valid, hard_failures = run_hard_validators(
+                sanitized_chunks, user_message, recent_asst_msgs, finish_reason=finish_reason
+            )
+            if not is_valid:
+                logger.warning(
+                    "Groq hard validator tripped on model=%s: %s",
+                    model_name, hard_failures,
+                    extra={
+                        "event": "prompt_leakage_detected" if any("prompt_leakage" in f for f in hard_failures) else "hard_validator_failed",
+                        "raw_prompt": system_content[:500],
+                        "raw_output": content[:500]
+                    }
+                )
+                return None
+
+            # Log-only validators
+            full_reply = " ".join(sanitized_chunks)
+            lang_warn = check_language_log_only(full_reply, user_message)
+            if lang_warn:
+                logger.warning("[Log-Only Validator] %s", lang_warn)
+            state_warn = check_state_contradiction_log_only(full_reply, routine_state)
+            if state_warn:
+                logger.warning("[Log-Only Validator] %s", state_warn)
+
+            pacing = calculate_pacing(
+                activity_name, [len(c) for c in sanitized_chunks], current_time,
+                is_vulnerable, pacing_mode, relationship_id=relationship_id,
+                delay_tier_override=delay_tier_override
+            )
+
+            return LLMResponse(
+                reply_text=full_reply,
+                chunks=sanitized_chunks,
+                availability_action=action,
+                delay_seconds=delay_sec,
+                provider="groq",
+                model=model_name,
+                emotion_displayed="warm_authentic",
+                persona_activity=activity_name,
+                delay_tier=pacing["delay_tier"],
+                read_delay_seconds=pacing["read_delay_seconds"],
+                typing_delays=pacing["typing_delays"]
+            )
+
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
-                # 1. Primary Model Attempt
-                content, status_code, reason, latency_ms = await self._call_model(
-                    client, primary_model, messages, headers, max_tokens=primary_max_tokens
-                )
-                # Primary retry once on empty/failure
-                if content is None:
-                    content, status_code, reason, latency_ms = await self._call_model(
-                        client, primary_model, messages, headers, max_tokens=primary_max_tokens
-                    )
+                # 1. Primary Model Attempt 1
+                resp = await _attempt_pipeline(primary_model, primary_max_tokens)
+                if resp:
+                    return resp
 
-                if content is not None:
-                    recent_asst = [m.get("content", "") for m in recent_bubbles if m.get("role") == "assistant"]
-                    _, sanitized, _ = validate_and_sanitize_response(
-                        content, recent_asst, user_message, context.get("stored_facts")
-                    )
-                    sanitized = fix_male_grammar(sanitized)
-                    chunks = _parse_llm_text_to_chunks(sanitized)
-                    if chunks:
-                        pacing = calculate_pacing(
-                            activity_name, [len(c) for c in chunks], current_time,
-                            is_vulnerable, pacing_mode, relationship_id=relationship_id,
-                            delay_tier_override=delay_tier_override
-                        )
-                        return LLMResponse(
-                            reply_text=" ".join(chunks),
-                            chunks=chunks,
-                            emotion_displayed="warm_authentic",
-                            persona_activity=activity_name,
-                            delay_tier=pacing["delay_tier"],
-                            read_delay_seconds=pacing["read_delay_seconds"],
-                            typing_delays=pacing["typing_delays"]
-                        )
+                # Primary Model Attempt 2 (Retry once)
+                logger.info("Retrying Groq primary model %s once...", primary_model)
+                resp = await _attempt_pipeline(primary_model, primary_max_tokens, is_retry=True)
+                if resp:
+                    return resp
 
-                # Primary failed -> Log structured telemetry for fallback
+                # Primary failed twice -> Secondary Fallback Model Attempt 1
+                logger.info("Groq primary failed twice. Trying secondary fallback model %s...", fallback_model)
                 logger.info(
                     "LLM Fallback Event",
                     extra={
                         "event": "llm_fallback",
                         "attempted_model": primary_model,
                         "fallback_model": fallback_model,
-                        "status_code": status_code,
-                        "reason": reason,
-                        "latency_ms": latency_ms
+                        "status_code": last_err["status_code"],
+                        "reason": last_err["reason"],
+                        "latency_ms": last_err["latency_ms"]
                     }
                 )
+                resp = await _attempt_pipeline(fallback_model, fallback_max_tokens)
+                if resp:
+                    return resp
 
-                # 2. Secondary Fallback Model Attempt (with reasoning_effort: low, 600 tokens)
-                content, status_code, reason, latency_ms = await self._call_model(
-                    client, fallback_model, messages, headers, max_tokens=fallback_max_tokens, reasoning_effort="low"
-                )
-                if content is not None:
-                    recent_asst = [m.get("content", "") for m in recent_bubbles if m.get("role") == "assistant"]
-                    _, sanitized, _ = validate_and_sanitize_response(
-                        content, recent_asst, user_message, context.get("stored_facts")
-                    )
-                    sanitized = fix_male_grammar(sanitized)
-                    chunks = _parse_llm_text_to_chunks(sanitized)
-                    if chunks:
-                        pacing = calculate_pacing(
-                            activity_name, [len(c) for c in chunks], current_time,
-                            is_vulnerable, pacing_mode, relationship_id=relationship_id,
-                            delay_tier_override=delay_tier_override
-                        )
-                        return LLMResponse(
-                            reply_text=" ".join(chunks),
-                            chunks=chunks,
-                            emotion_displayed="warm_authentic",
-                            persona_activity=activity_name,
-                            delay_tier=pacing["delay_tier"],
-                            read_delay_seconds=pacing["read_delay_seconds"],
-                            typing_delays=pacing["typing_delays"]
-                        )
-
-                # Secondary failed -> Log structured telemetry for fallback to neutral glitch
-                logger.info(
-                    "LLM Fallback Event",
-                    extra={
-                        "event": "llm_fallback",
-                        "attempted_model": fallback_model,
-                        "fallback_model": "glitch_fallback",
-                        "status_code": status_code,
-                        "reason": reason,
-                        "latency_ms": latency_ms
-                    }
-                )
+                # Secondary Fallback Attempt 2
+                resp = await _attempt_pipeline(fallback_model, fallback_max_tokens, is_retry=True)
+                if resp:
+                    return resp
 
         except Exception as e:
-            logger.warning("Groq unexpected adapter exception: %s. Using neutral glitch buffer.", e)
+            logger.warning("Groq unexpected adapter exception: %s", e)
 
-        # Return neutral glitch fallback so LLM prompt history is not polluted with canned templates
-        glitch_msg = "Arre ek second, network thoda glitch kar raha hai... kya bola tumne?"
-        chunks = [glitch_msg]
-        pacing = calculate_pacing(
-            activity_name, [len(c) for c in chunks], current_time,
-            is_vulnerable, pacing_mode, relationship_id=relationship_id,
-            delay_tier_override=delay_tier_override
-        )
+        # If both fail twice, send NOTHING rather than a fragment, and log it!
+        logger.error("Groq models failed all attempts. Returning empty response rather than a fragment.")
         return LLMResponse(
-            reply_text=glitch_msg,
-            chunks=chunks,
-            emotion_displayed="neutral",
+            reply_text="",
+            chunks=[],
+            availability_action="ignore_until_free",
+            provider="groq",
+            model="none",
             persona_activity=activity_name,
-            delay_tier=pacing["delay_tier"],
-            read_delay_seconds=pacing["read_delay_seconds"],
-            typing_delays=pacing["typing_delays"]
+            delay_tier="quick"
         )
 
     async def decide_heartbeat_attention_message(self, context: Dict[str, Any]) -> Dict[str, Any]:
@@ -1319,7 +1361,9 @@ class GroqLLMAdapter(BaseLLMAdapter):
             time_since_user_str=context["time_since_user_str"],
             time_since_unprompted_str=context["time_since_unprompted_str"],
             recent_messages=context.get("recent_messages", []),
-            stored_facts=context.get("stored_facts")
+            stored_facts=context.get("stored_facts"),
+            daily_notes=context.get("daily_notes"),
+            had_unanswered_message=context.get("had_unanswered_message", False)
         )
         primary_model = getattr(settings, "GROQ_MODEL", "qwen/qwen3.8-27b") or "qwen/qwen3.8-27b"
         headers = {
@@ -1333,11 +1377,11 @@ class GroqLLMAdapter(BaseLLMAdapter):
         ]
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
-                raw_text, status_code, _, _ = await self._call_model(
-                    client, primary_model, messages, headers, max_tokens=250
+                raw_text, _, status_code, _, _ = await self._call_model(
+                    client, primary_model, messages, headers, max_tokens=300
                 )
                 if raw_text:
-                    parsed = _parse_heartbeat_json(raw_text)
+                    parsed = _parse_heartbeat_json(strip_thinking_tags(raw_text))
                     if parsed:
                         return _sanitize_heartbeat_decision(parsed, context)
         except Exception as e:
@@ -1516,10 +1560,9 @@ def _mock_decide_heartbeat(context: Dict[str, Any]) -> Dict[str, Any]:
 
 class GeminiLLMAdapter(BaseLLMAdapter):
     """
-    Remote adapter using Google Gemini free tier API.
-    Model: Gemini 2.5 Flash (via env var GEMINI_MODEL).
-    Fallback chain: Gemini 2.5 Flash -> Groq -> Mock.
-    Temperature: 0.8.
+    Remote adapter using Google Gemini API.
+    Model: Gemini 2.5 Flash / Gemini 3.5 Flash (via env var GEMINI_MODEL).
+    Fallback chain: Gemini -> Groq -> Send nothing (if both fail twice).
     """
 
     async def generate_response(self, context: Dict[str, Any]) -> LLMResponse:
@@ -1530,13 +1573,14 @@ class GeminiLLMAdapter(BaseLLMAdapter):
         delay_tier_override = context.get("delay_tier_override")
         is_vulnerable = is_emotionally_vulnerable(user_message)
         activity_name, delay_tier, _ = get_activity_for_time(current_time, is_vulnerable, relationship_id=relationship_id)
+        ist_ctx = get_ist_context(current_time)
+        routine_state = ist_ctx.get("routine_state", "free")
 
-        # Check for Gemini API key; if missing, immediately fall back to Groq
+        # If no Gemini API key configured, immediately fall back to Groq
         if not getattr(settings, "GEMINI_API_KEY", None):
             logger.info("GEMINI_API_KEY not configured. Falling back to Groq adapter.")
             return await groq_adapter.generate_response(context)
 
-        # Retrieve recent assistant messages to determine question and arre limits
         recent_messages = context.get("recent_messages", [])
         recent_asst_msgs = [m.get("content", "") for m in recent_messages if m.get("role") in ("assistant", "model")]
 
@@ -1556,7 +1600,6 @@ class GeminiLLMAdapter(BaseLLMAdapter):
             role = "model" if m.get("role") in ("assistant", "model") else "user"
             content = m.get("content", "")
             if content:
-                # Merge consecutive roles for Gemini API format compliance
                 if contents and contents[-1]["role"] == role:
                     contents[-1]["parts"][0]["text"] += "\n" + content
                 else:
@@ -1568,6 +1611,8 @@ class GeminiLLMAdapter(BaseLLMAdapter):
 
         model_name = getattr(settings, "GEMINI_MODEL", "gemini-3.5-flash") or "gemini-3.5-flash"
         temperature = getattr(settings, "LLM_TEMPERATURE", 0.8)
+        max_output_tokens = getattr(settings, "GEMINI_MAX_TOKENS", 600)
+        thinking_budget = getattr(settings, "GEMINI_THINKING_BUDGET", 0)
 
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={settings.GEMINI_API_KEY}"
         payload = {
@@ -1575,74 +1620,125 @@ class GeminiLLMAdapter(BaseLLMAdapter):
             "contents": contents,
             "generationConfig": {
                 "temperature": temperature,
-                "maxOutputTokens": 300
+                "maxOutputTokens": max_output_tokens,
+                "responseMimeType": "application/json",
+                "thinkingConfig": {"thinkingBudget": thinking_budget}
             }
         }
 
+        async def _attempt_gemini(client: httpx.AsyncClient, is_retry: bool = False) -> Optional[LLMResponse]:
+            try:
+                res = await client.post(url, json=payload)
+                if res.status_code != 200:
+                    logger.warning("Gemini API error %s: %s", res.status_code, res.text[:200])
+                    if res.status_code == 429:
+                        await asyncio.sleep(2.0)
+                    return None
+
+                data = res.json()
+                candidates = data.get("candidates", [])
+                if not candidates:
+                    return None
+
+                cand = candidates[0]
+                finish_reason = cand.get("finishReason")
+                raw_text = cand.get("content", {}).get("parts", [{}])[0].get("text", "")
+
+                parsed = parse_llm_json_response(raw_text)
+                if not parsed or not isinstance(parsed, dict):
+                    logger.warning("Gemini output failed JSON parsing: %s", raw_text[:200])
+                    return None
+
+                action = str(parsed.get("availability_action", "reply_now")).strip()
+                raw_chunks = parsed.get("chunks", [])
+                delay_sec = float(parsed.get("delay_seconds", 0.0) or 0.0)
+
+                if action == "ignore_until_free":
+                    return LLMResponse(
+                        reply_text="",
+                        chunks=[],
+                        availability_action="ignore_until_free",
+                        delay_seconds=0.0,
+                        provider="gemini",
+                        model=model_name,
+                        persona_activity=activity_name,
+                        delay_tier="quick"
+                    )
+
+                sanitized_chunks = []
+                for c in raw_chunks:
+                    _, san, _ = validate_and_sanitize_response(str(c), recent_asst_msgs, user_message, stored_facts)
+                    san = fix_male_grammar(san)
+                    if san.strip():
+                        sanitized_chunks.append(san.strip())
+
+                # Run HARD validators
+                is_valid, hard_failures = run_hard_validators(
+                    sanitized_chunks, user_message, recent_asst_msgs, finish_reason=finish_reason
+                )
+                if not is_valid:
+                    logger.warning(
+                        "Gemini hard validator tripped on model=%s: %s",
+                        model_name, hard_failures,
+                        extra={
+                            "event": "prompt_leakage_detected" if any("prompt_leakage" in f for f in hard_failures) else "hard_validator_failed",
+                            "raw_prompt": system_prompt[:500],
+                            "raw_output": raw_text[:500]
+                        }
+                    )
+                    return None
+
+                # Log-only validators
+                full_reply = " ".join(sanitized_chunks)
+                lang_warn = check_language_log_only(full_reply, user_message)
+                if lang_warn:
+                    logger.warning("[Log-Only Validator] %s", lang_warn)
+                state_warn = check_state_contradiction_log_only(full_reply, routine_state)
+                if state_warn:
+                    logger.warning("[Log-Only Validator] %s", state_warn)
+
+                pacing = calculate_pacing(
+                    activity_name, [len(c) for c in sanitized_chunks], current_time,
+                    is_vulnerable, pacing_mode, relationship_id=relationship_id,
+                    delay_tier_override=delay_tier_override
+                )
+
+                return LLMResponse(
+                    reply_text=full_reply,
+                    chunks=sanitized_chunks,
+                    availability_action=action,
+                    delay_seconds=delay_sec,
+                    provider="gemini",
+                    model=model_name,
+                    emotion_displayed="warm_authentic",
+                    persona_activity=activity_name,
+                    delay_tier=pacing["delay_tier"],
+                    read_delay_seconds=pacing["read_delay_seconds"],
+                    typing_delays=pacing["typing_delays"]
+                )
+
+            except Exception as exc:
+                logger.warning("Gemini invocation exception: %s", exc)
+                return None
+
         try:
             async with httpx.AsyncClient(timeout=12.0) as client:
-                res = await client.post(url, json=payload)
-                if res.status_code == 200:
-                    data = res.json()
-                    candidates = data.get("candidates", [])
-                    if candidates:
-                        raw_text = candidates[0]["content"]["parts"][0]["text"]
+                # 1. Gemini Attempt 1
+                resp = await _attempt_gemini(client)
+                if resp:
+                    return resp
 
-                        # Post-check validation
-                        is_valid, sanitized, failures = validate_and_sanitize_response(
-                            raw_text, recent_asst_msgs, user_message, stored_facts
-                        )
+                # 2. Gemini Attempt 2 (Retry once)
+                logger.info("Retrying Gemini %s once...", model_name)
+                resp = await _attempt_gemini(client, is_retry=True)
+                if resp:
+                    return resp
 
-                        # Retry if male grammar detected
-                        if "male_grammar_detected" in failures:
-                            logger.warning("Male grammar detected in Gemini output. Retrying with explicit grammar reminder.")
-                            retry_contents = list(contents)
-                            retry_contents.append({"role": "model", "parts": [{"text": raw_text}]})
-                            retry_contents.append({
-                                "role": "user",
-                                "parts": [{"text": "Correction: rewrite strictly in female Hindi grammar (karti hoon, gayi, dekhti, thi). Never use male forms."}]
-                            })
-                            retry_payload = {
-                                "system_instruction": {"parts": [{"text": system_prompt}]},
-                                "contents": retry_contents,
-                                "generationConfig": {"temperature": 0.7, "maxOutputTokens": 300}
-                            }
-                            retry_res = await client.post(url, json=retry_payload)
-                            if retry_res.status_code == 200:
-                                retry_data = retry_res.json()
-                                retry_cand = retry_data.get("candidates", [])
-                                if retry_cand:
-                                    raw_text = retry_cand[0]["content"]["parts"][0]["text"]
-                                    _, sanitized, _ = validate_and_sanitize_response(
-                                        raw_text, recent_asst_msgs, user_message, stored_facts
-                                    )
-
-                        sanitized = fix_male_grammar(sanitized)
-                        chunks = _parse_llm_text_to_chunks(sanitized)
-                        if chunks:
-                            pacing = calculate_pacing(
-                                activity_name, [len(c) for c in chunks], current_time,
-                                is_vulnerable, pacing_mode, relationship_id=relationship_id,
-                                delay_tier_override=delay_tier_override
-                            )
-                            return LLMResponse(
-                                reply_text=" ".join(chunks),
-                                chunks=chunks,
-                                emotion_displayed="warm_authentic",
-                                persona_activity=activity_name,
-                                delay_tier=pacing["delay_tier"],
-                                read_delay_seconds=pacing["read_delay_seconds"],
-                                typing_delays=pacing["typing_delays"]
-                            )
-                else:
-                    logger.warning(
-                        "Gemini API returned status %s: %s. Falling back to Groq.",
-                        res.status_code, res.text[:200]
-                    )
         except Exception as exc:
-            logger.warning("Gemini request exception: %s. Falling back to Groq.", exc)
+            logger.warning("Gemini client connection error: %s", exc)
 
-        # Fallback to GroqLLMAdapter
+        # Gemini failed twice -> Fallback to Groq
+        logger.info("Gemini failed twice. Falling back to Groq adapter.")
         return await groq_adapter.generate_response(context)
 
     async def decide_heartbeat_attention_message(self, context: Dict[str, Any]) -> Dict[str, Any]:
@@ -1655,7 +1751,9 @@ class GeminiLLMAdapter(BaseLLMAdapter):
             time_since_user_str=context["time_since_user_str"],
             time_since_unprompted_str=context["time_since_unprompted_str"],
             recent_messages=context.get("recent_messages", []),
-            stored_facts=context.get("stored_facts")
+            stored_facts=context.get("stored_facts"),
+            daily_notes=context.get("daily_notes"),
+            had_unanswered_message=context.get("had_unanswered_message", False)
         )
         model_name = getattr(settings, "GEMINI_MODEL", "gemini-3.5-flash") or "gemini-3.5-flash"
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={settings.GEMINI_API_KEY}"
@@ -1663,8 +1761,9 @@ class GeminiLLMAdapter(BaseLLMAdapter):
             "contents": [{"role": "user", "parts": [{"text": prompt}]}],
             "generationConfig": {
                 "temperature": 0.8,
-                "maxOutputTokens": 200,
-                "responseMimeType": "application/json"
+                "maxOutputTokens": 300,
+                "responseMimeType": "application/json",
+                "thinkingConfig": {"thinkingBudget": 0}
             }
         }
         try:
@@ -1675,7 +1774,7 @@ class GeminiLLMAdapter(BaseLLMAdapter):
                     candidates = data.get("candidates", [])
                     if candidates:
                         raw_text = candidates[0]["content"]["parts"][0]["text"]
-                        parsed = _parse_heartbeat_json(raw_text)
+                        parsed = _parse_heartbeat_json(strip_thinking_tags(raw_text))
                         if parsed:
                             return _sanitize_heartbeat_decision(parsed, context)
                 else:
