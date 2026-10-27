@@ -157,9 +157,14 @@ class OpenLoop(Base):
     persona_id: Mapped[str] = mapped_column(String(50), index=True)
     topic: Mapped[str] = mapped_column(String(255))
     origin_memory_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
-    status: Mapped[str] = mapped_column(String(50), default="open")  # open, resolved, dropped
+    status: Mapped[str] = mapped_column(String(50), default="open")  # open, resolved, dropped, expired
     last_relevant_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     next_review_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    user_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    persona_state_at_time: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)  # sleeping, busy, left_hanging
+    loop_type: Mapped[str] = mapped_column(String(50), default="departure")  # night_sleep, day_busy, departure, signoff
+    raised_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class SafetyEvent(Base):

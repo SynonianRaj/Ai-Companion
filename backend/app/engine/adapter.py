@@ -27,6 +27,7 @@ from backend.app.engine.persona import (
     ARRE_OPENER_REGEX,
     INSTAGRAM_QUERY_REGEX
 )
+from backend.app.engine.vocabulary import vocabulary_validator
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +84,7 @@ class LLMResponse(BaseModel):
     stage_transition: Optional[str] = None
     extracted_memories: List[Dict[str, Any]] = []
     extracted_open_loops: List[str] = []
+    open_loop: bool = False
     emotion_displayed: str = "warm"
     persona_activity: str = "Relaxing at home with music"
     delay_tier: str = "quick"
@@ -380,6 +382,19 @@ def get_city_familiarity_chunks(city_key: str, city_raw: str) -> List[str]:
 
 
 class BaseLLMAdapter:
+    @staticmethod
+    def deduplicate_chunks(chunks: List[str]) -> List[str]:
+        deduped = []
+        seen = set()
+        for c in chunks:
+            norm = re.sub(r"[^\w\s]", "", str(c).lower()).strip()
+            if norm and norm not in seen:
+                seen.add(norm)
+                deduped.append(str(c).strip())
+        return deduped
+
+    _deduplicate_chunks = deduplicate_chunks
+
     async def generate_response(self, context: Dict[str, Any]) -> LLMResponse:
         raise NotImplementedError
 
@@ -1128,7 +1143,8 @@ class GroqLLMAdapter(BaseLLMAdapter):
         payload: Dict[str, Any] = {
             "model": model,
             "messages": messages,
-            "temperature": getattr(settings, "LLM_TEMPERATURE", 0.8),
+            "temperature": getattr(settings, "LLM_TEMPERATURE", 0.65),
+            "top_p": getattr(settings, "LLM_TOP_P", 0.9),
             "max_tokens": max_tokens,
             "response_format": {"type": "json_object"}
         }
@@ -1189,7 +1205,9 @@ class GroqLLMAdapter(BaseLLMAdapter):
             context=context,
             stored_facts=context.get("stored_facts"),
             allow_question=allow_question,
-            allow_arre=allow_arre
+            allow_arre=allow_arre,
+            things_already_said=context.get("things_already_said"),
+            open_loops=context.get("open_loops")
         )
         messages = [{"role": "system", "content": system_content}]
         for m in recent_bubbles:
@@ -1248,17 +1266,22 @@ class GroqLLMAdapter(BaseLLMAdapter):
                     delay_tier="quick"
                 )
 
-            # Sanitize chunks & grammar
+            # Sanitize chunks, grammar, and deduplicate within reply
             sanitized_chunks = []
+            seen_chunks = set()
             for c in raw_chunks:
                 _, san, _ = validate_and_sanitize_response(str(c), recent_asst_msgs, user_message, context.get("stored_facts"))
-                san = fix_male_grammar(san)
-                if san.strip():
-                    sanitized_chunks.append(san.strip())
+                san = fix_male_grammar(san).strip()
+                norm = re.sub(r"[^\w\s]", "", san.lower()).strip()
+                if san and norm not in seen_chunks:
+                    seen_chunks.add(norm)
+                    sanitized_chunks.append(san)
 
             # Run HARD validators
             is_valid, hard_failures = run_hard_validators(
-                sanitized_chunks, user_message, recent_asst_msgs, finish_reason=finish_reason
+                sanitized_chunks, user_message, recent_asst_msgs,
+                finish_reason=finish_reason,
+                is_sincere_ai_query=context.get("is_ai_query", False)
             )
             if not is_valid:
                 logger.warning(
@@ -1272,8 +1295,11 @@ class GroqLLMAdapter(BaseLLMAdapter):
                 )
                 return None
 
-            # Log-only validators
+            # Vocabulary check (log-only first)
             full_reply = " ".join(sanitized_chunks)
+            vocabulary_validator.check_candidate(full_reply, user_messages=[user_message])
+
+            # Log-only validators
             lang_warn = check_language_log_only(full_reply, user_message)
             if lang_warn:
                 logger.warning("[Log-Only Validator] %s", lang_warn)
@@ -1287,6 +1313,8 @@ class GroqLLMAdapter(BaseLLMAdapter):
                 delay_tier_override=delay_tier_override
             )
 
+            has_ol = bool(parsed.get("open_loop", False))
+
             return LLMResponse(
                 reply_text=full_reply,
                 chunks=sanitized_chunks,
@@ -1294,6 +1322,7 @@ class GroqLLMAdapter(BaseLLMAdapter):
                 delay_seconds=delay_sec,
                 provider="groq",
                 model=model_name,
+                open_loop=has_ol,
                 emotion_displayed="warm_authentic",
                 persona_activity=activity_name,
                 delay_tier=pacing["delay_tier"],
@@ -1363,7 +1392,8 @@ class GroqLLMAdapter(BaseLLMAdapter):
             recent_messages=context.get("recent_messages", []),
             stored_facts=context.get("stored_facts"),
             daily_notes=context.get("daily_notes"),
-            had_unanswered_message=context.get("had_unanswered_message", False)
+            had_unanswered_message=context.get("had_unanswered_message", False),
+            open_loops=context.get("open_loops")
         )
         primary_model = getattr(settings, "GROQ_MODEL", "qwen/qwen3.8-27b") or "qwen/qwen3.8-27b"
         headers = {
@@ -1561,8 +1591,10 @@ def _mock_decide_heartbeat(context: Dict[str, Any]) -> Dict[str, Any]:
 class GeminiLLMAdapter(BaseLLMAdapter):
     """
     Remote adapter using Google Gemini API.
-    Model: Gemini 2.5 Flash / Gemini 3.5 Flash (via env var GEMINI_MODEL).
-    Fallback chain: Gemini -> Groq -> Send nothing (if both fail twice).
+    Model: Gemini Flash (via env var GEMINI_MODEL).
+    Fallback chain: Gemini Flash (retry with backoff) -> Gemini Flash-Lite -> Groq last.
+    On unknown-word failures: retry same Gemini model, never fail over to Groq.
+    If all attempts fail: send least-bad candidate that passed hard validators, or skip sending.
     """
 
     async def generate_response(self, context: Dict[str, Any]) -> LLMResponse:
@@ -1592,7 +1624,9 @@ class GeminiLLMAdapter(BaseLLMAdapter):
             context=context,
             stored_facts=stored_facts,
             allow_question=allow_question,
-            allow_arre=allow_arre
+            allow_arre=allow_arre,
+            things_already_said=context.get("things_already_said"),
+            open_loops=context.get("open_loops")
         )
 
         contents = []
@@ -1609,137 +1643,180 @@ class GeminiLLMAdapter(BaseLLMAdapter):
             if user_message:
                 contents.append({"role": "user", "parts": [{"text": user_message}]})
 
-        model_name = getattr(settings, "GEMINI_MODEL", "gemini-3.5-flash") or "gemini-3.5-flash"
-        temperature = getattr(settings, "LLM_TEMPERATURE", 0.8)
+        primary_model = getattr(settings, "GEMINI_MODEL", "gemini-3.5-flash") or "gemini-3.5-flash"
+        lite_model = getattr(settings, "GEMINI_LITE_MODEL", "gemini-3.5-flash-lite")
+        temperature = getattr(settings, "LLM_TEMPERATURE", 0.65)
+        top_p = getattr(settings, "LLM_TOP_P", 0.9)
         max_output_tokens = getattr(settings, "GEMINI_MAX_TOKENS", 600)
         thinking_budget = getattr(settings, "GEMINI_THINKING_BUDGET", 0)
 
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={settings.GEMINI_API_KEY}"
-        payload = {
-            "system_instruction": {"parts": [{"text": system_prompt}]},
-            "contents": contents,
-            "generationConfig": {
+        least_bad_candidate: Optional[LLMResponse] = None
+
+        async def _attempt_gemini(client: httpx.AsyncClient, model_name: str) -> Optional[LLMResponse]:
+            nonlocal least_bad_candidate
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={settings.GEMINI_API_KEY}"
+            gen_config = {
                 "temperature": temperature,
+                "topP": top_p,
                 "maxOutputTokens": max_output_tokens,
-                "responseMimeType": "application/json",
-                "thinkingConfig": {"thinkingBudget": thinking_budget}
+                "responseMimeType": "application/json"
             }
-        }
+            if thinking_budget is not None and "lite" not in model_name.lower():
+                gen_config["thinkingConfig"] = {"thinkingBudget": thinking_budget}
 
-        async def _attempt_gemini(client: httpx.AsyncClient, is_retry: bool = False) -> Optional[LLMResponse]:
-            try:
-                res = await client.post(url, json=payload)
-                if res.status_code != 200:
-                    logger.warning("Gemini API error %s: %s", res.status_code, res.text[:200])
-                    if res.status_code == 429:
-                        await asyncio.sleep(2.0)
-                    return None
+            payload = {
+                "system_instruction": {"parts": [{"text": system_prompt}]},
+                "contents": contents,
+                "generationConfig": gen_config
+            }
 
-                data = res.json()
-                candidates = data.get("candidates", [])
-                if not candidates:
-                    return None
+            for attempt in range(1, 3):
+                try:
+                    res = await client.post(url, json=payload)
+                    if res.status_code == 200:
+                        data = res.json()
+                        candidates = data.get("candidates", [])
+                        if not candidates:
+                            continue
+                        cand = candidates[0]
+                        finish_reason = cand.get("finishReason")
+                        raw_text = cand.get("content", {}).get("parts", [{}])[0].get("text", "")
+                        parsed = parse_llm_json_response(raw_text)
+                        if not parsed or not isinstance(parsed, dict):
+                            logger.warning("Gemini output failed JSON parsing: %s", raw_text[:200])
+                            continue
 
-                cand = candidates[0]
-                finish_reason = cand.get("finishReason")
-                raw_text = cand.get("content", {}).get("parts", [{}])[0].get("text", "")
+                        action = str(parsed.get("availability_action", "reply_now")).strip()
+                        raw_chunks = parsed.get("chunks", [])
+                        delay_sec = float(parsed.get("delay_seconds", 0.0) or 0.0)
+                        has_ol = bool(parsed.get("open_loop", False))
 
-                parsed = parse_llm_json_response(raw_text)
-                if not parsed or not isinstance(parsed, dict):
-                    logger.warning("Gemini output failed JSON parsing: %s", raw_text[:200])
-                    return None
+                        if action == "ignore_until_free":
+                            return LLMResponse(
+                                reply_text="",
+                                chunks=[],
+                                availability_action="ignore_until_free",
+                                delay_seconds=0.0,
+                                provider="gemini",
+                                model=model_name,
+                                open_loop=has_ol,
+                                persona_activity=activity_name,
+                                delay_tier="quick"
+                            )
 
-                action = str(parsed.get("availability_action", "reply_now")).strip()
-                raw_chunks = parsed.get("chunks", [])
-                delay_sec = float(parsed.get("delay_seconds", 0.0) or 0.0)
+                        # Sanitize chunks & deduplicate bubbles within reply
+                        sanitized_chunks = []
+                        seen_chunks = set()
+                        for c in raw_chunks:
+                            _, san, _ = validate_and_sanitize_response(str(c), recent_asst_msgs, user_message, stored_facts)
+                            san = fix_male_grammar(san).strip()
+                            norm = re.sub(r"[^\w\s]", "", san.lower()).strip()
+                            if san and norm not in seen_chunks:
+                                seen_chunks.add(norm)
+                                sanitized_chunks.append(san)
 
-                if action == "ignore_until_free":
-                    return LLMResponse(
-                        reply_text="",
-                        chunks=[],
-                        availability_action="ignore_until_free",
-                        delay_seconds=0.0,
-                        provider="gemini",
-                        model=model_name,
-                        persona_activity=activity_name,
-                        delay_tier="quick"
-                    )
+                        # Run HARD validators
+                        is_valid, hard_failures = run_hard_validators(
+                            sanitized_chunks, user_message, recent_asst_msgs,
+                            finish_reason=finish_reason,
+                            is_sincere_ai_query=context.get("is_ai_query", False)
+                        )
+                        if not is_valid:
+                            logger.warning("Gemini hard validator tripped on %s: %s", model_name, hard_failures)
+                            continue
 
-                sanitized_chunks = []
-                for c in raw_chunks:
-                    _, san, _ = validate_and_sanitize_response(str(c), recent_asst_msgs, user_message, stored_facts)
-                    san = fix_male_grammar(san)
-                    if san.strip():
-                        sanitized_chunks.append(san.strip())
+                        # Vocabulary check (Levenshtein tolerant, log-only first)
+                        full_reply = " ".join(sanitized_chunks)
+                        is_vocab_ok, unknown_words = vocabulary_validator.check_candidate(
+                            full_reply, user_messages=[user_message]
+                        )
+                        if not is_vocab_ok:
+                            logger.warning("Unknown words on Gemini %s: %s. Retrying same model...", model_name, unknown_words)
+                            # Retry same Gemini model per approved rule (never fail over to Groq on unknown words)
+                            continue
 
-                # Run HARD validators
-                is_valid, hard_failures = run_hard_validators(
-                    sanitized_chunks, user_message, recent_asst_msgs, finish_reason=finish_reason
-                )
-                if not is_valid:
-                    logger.warning(
-                        "Gemini hard validator tripped on model=%s: %s",
-                        model_name, hard_failures,
-                        extra={
-                            "event": "prompt_leakage_detected" if any("prompt_leakage" in f for f in hard_failures) else "hard_validator_failed",
-                            "raw_prompt": system_prompt[:500],
-                            "raw_output": raw_text[:500]
-                        }
-                    )
-                    return None
+                        # Log-only validators
+                        lang_warn = check_language_log_only(full_reply, user_message)
+                        if lang_warn:
+                            logger.warning("[Log-Only Validator] %s", lang_warn)
+                        state_warn = check_state_contradiction_log_only(full_reply, routine_state)
+                        if state_warn:
+                            logger.warning("[Log-Only Validator] %s", state_warn)
 
-                # Log-only validators
-                full_reply = " ".join(sanitized_chunks)
-                lang_warn = check_language_log_only(full_reply, user_message)
-                if lang_warn:
-                    logger.warning("[Log-Only Validator] %s", lang_warn)
-                state_warn = check_state_contradiction_log_only(full_reply, routine_state)
-                if state_warn:
-                    logger.warning("[Log-Only Validator] %s", state_warn)
+                        pacing = calculate_pacing(
+                            activity_name, [len(c) for c in sanitized_chunks], current_time,
+                            is_vulnerable, pacing_mode, relationship_id=relationship_id,
+                            delay_tier_override=delay_tier_override
+                        )
 
-                pacing = calculate_pacing(
-                    activity_name, [len(c) for c in sanitized_chunks], current_time,
-                    is_vulnerable, pacing_mode, relationship_id=relationship_id,
-                    delay_tier_override=delay_tier_override
-                )
+                        candidate_resp = LLMResponse(
+                            reply_text=full_reply,
+                            chunks=sanitized_chunks,
+                            availability_action=action,
+                            delay_seconds=delay_sec,
+                            provider="gemini",
+                            model=model_name,
+                            open_loop=has_ol,
+                            emotion_displayed="warm_authentic",
+                            persona_activity=activity_name,
+                            delay_tier=pacing["delay_tier"],
+                            read_delay_seconds=pacing["read_delay_seconds"],
+                            typing_delays=pacing["typing_delays"]
+                        )
+                        least_bad_candidate = candidate_resp
+                        return candidate_resp
 
-                return LLMResponse(
-                    reply_text=full_reply,
-                    chunks=sanitized_chunks,
-                    availability_action=action,
-                    delay_seconds=delay_sec,
-                    provider="gemini",
-                    model=model_name,
-                    emotion_displayed="warm_authentic",
-                    persona_activity=activity_name,
-                    delay_tier=pacing["delay_tier"],
-                    read_delay_seconds=pacing["read_delay_seconds"],
-                    typing_delays=pacing["typing_delays"]
-                )
+                    elif res.status_code in (503, 429):
+                        wait_s = 1.5 * attempt
+                        logger.info("Gemini status %s on %s. Backing off %.1fs (attempt %d)...", res.status_code, model_name, wait_s, attempt)
+                        await asyncio.sleep(wait_s)
+                    else:
+                        logger.warning("Gemini API error %s on %s: %s", res.status_code, model_name, res.text[:200])
+                        break
+                except Exception as exc:
+                    logger.warning("Gemini invocation exception on %s: %s", model_name, exc)
+                    if attempt < 2:
+                        await asyncio.sleep(1.0)
 
-            except Exception as exc:
-                logger.warning("Gemini invocation exception: %s", exc)
-                return None
+            return None
 
         try:
-            async with httpx.AsyncClient(timeout=12.0) as client:
-                # 1. Gemini Attempt 1
-                resp = await _attempt_gemini(client)
+            async with httpx.AsyncClient(timeout=14.0) as client:
+                # 1. Primary Model (e.g. gemini-3.5-flash / gemini-2.5-flash) with backoff
+                resp = await _attempt_gemini(client, primary_model)
                 if resp:
                     return resp
 
-                # 2. Gemini Attempt 2 (Retry once)
-                logger.info("Retrying Gemini %s once...", model_name)
-                resp = await _attempt_gemini(client, is_retry=True)
-                if resp:
-                    return resp
+                # 2. Secondary Lite Model (if configured and different from primary)
+                if lite_model and lite_model != primary_model:
+                    logger.info("Primary Gemini failed. Trying Gemini Flash-Lite %s...", lite_model)
+                    resp = await _attempt_gemini(client, lite_model)
+                    if resp:
+                        return resp
 
         except Exception as exc:
             logger.warning("Gemini client connection error: %s", exc)
 
-        # Gemini failed twice -> Fallback to Groq
-        logger.info("Gemini failed twice. Falling back to Groq adapter.")
-        return await groq_adapter.generate_response(context)
+        # 3. Groq Fallback as Last Resort
+        logger.info("Gemini chain failed. Falling back to Groq adapter as last resort.")
+        groq_resp = await groq_adapter.generate_response(context)
+        if groq_resp and groq_resp.chunks:
+            return groq_resp
+
+        # 4. Terminal Fallback: return least-bad passing candidate or skip
+        if least_bad_candidate:
+            logger.warning("Sending least-bad passing candidate from prior attempts.")
+            return least_bad_candidate
+
+        logger.warning("All providers failed. Sending clean skip response.")
+        return LLMResponse(
+            reply_text="",
+            chunks=[],
+            availability_action="ignore_until_free",
+            provider="fallback",
+            model="none",
+            persona_activity=activity_name
+        )
 
     async def decide_heartbeat_attention_message(self, context: Dict[str, Any]) -> Dict[str, Any]:
         if not getattr(settings, "GEMINI_API_KEY", None):
@@ -1753,14 +1830,16 @@ class GeminiLLMAdapter(BaseLLMAdapter):
             recent_messages=context.get("recent_messages", []),
             stored_facts=context.get("stored_facts"),
             daily_notes=context.get("daily_notes"),
-            had_unanswered_message=context.get("had_unanswered_message", False)
+            had_unanswered_message=context.get("had_unanswered_message", False),
+            open_loops=context.get("open_loops")
         )
         model_name = getattr(settings, "GEMINI_MODEL", "gemini-3.5-flash") or "gemini-3.5-flash"
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={settings.GEMINI_API_KEY}"
         payload = {
             "contents": [{"role": "user", "parts": [{"text": prompt}]}],
             "generationConfig": {
-                "temperature": 0.8,
+                "temperature": getattr(settings, "LLM_TEMPERATURE", 0.65),
+                "topP": getattr(settings, "LLM_TOP_P", 0.9),
                 "maxOutputTokens": 300,
                 "responseMimeType": "application/json",
                 "thinkingConfig": {"thinkingBudget": 0}
@@ -1777,6 +1856,17 @@ class GeminiLLMAdapter(BaseLLMAdapter):
                         parsed = _parse_heartbeat_json(strip_thinking_tags(raw_text))
                         if parsed:
                             return _sanitize_heartbeat_decision(parsed, context)
+                elif res.status_code in (503, 429):
+                    await asyncio.sleep(1.5)
+                    res = await client.post(url, json=payload)
+                    if res.status_code == 200:
+                        data = res.json()
+                        candidates = data.get("candidates", [])
+                        if candidates:
+                            raw_text = candidates[0]["content"]["parts"][0]["text"]
+                            parsed = _parse_heartbeat_json(strip_thinking_tags(raw_text))
+                            if parsed:
+                                return _sanitize_heartbeat_decision(parsed, context)
                 else:
                     logger.warning("Gemini heartbeat API status %s. Falling back to Groq.", res.status_code)
         except Exception as e:

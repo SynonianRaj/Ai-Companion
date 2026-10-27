@@ -1,6 +1,7 @@
 import asyncio
 import re
 import json
+import uuid
 import random
 import logging
 import httpx
@@ -382,19 +383,30 @@ class Orchestrator:
             # Step 3: Reset Inactivity Clock (User-authored message)
             await lifecycle_service.record_user_interaction(session, relationship)
 
-            # Close any existing open loops since the user texted first
-            close_stmt = (
-                update(OpenLoop)
-                .where(
-                    and_(
-                        OpenLoop.relationship_id == relationship.id,
-                        OpenLoop.status == "open"
-                    )
-                )
-                .values(status="resolved", last_relevant_at=now)
-                .execution_options(synchronize_session=False)
-            )
-            await session.execute(close_stmt)
+            # Inspect active open loops for left-hanging context
+            active_loops = await memory_service.get_open_loops(session, relationship.id)
+            passed_open_loops = []
+            if active_loops:
+                # Check if user message explicitly addressed the prior sleep/drop-off
+                user_msg_addressed = bool(re.search(
+                    r"\b(kal raat|so gayi thi|so gaya tha|neend aa gayi|chalo so jao|so jao|goodnight|gn|no problem|koi baat nahi|koi na)\b",
+                    combined_text, re.IGNORECASE
+                ))
+                if user_msg_addressed:
+                    for ol in active_loops:
+                        await memory_service.resolve_open_loop(session, ol.id)
+                else:
+                    # Pass open loop with 70-80% likelihood per approved plan
+                    if random.random() < getattr(settings, "OPEN_LOOP_FOLLOWUP_PROBABILITY", 0.75):
+                        top_loop = active_loops[0]
+                        delta_ol = (now - to_utc(top_loop.last_relevant_at)).total_seconds() if top_loop.last_relevant_at else 0
+                        time_desc = f"{int(delta_ol // 3600)}h ago" if delta_ol >= 3600 else f"{int(delta_ol // 60)}m ago"
+                        passed_open_loops.append({
+                            "id": top_loop.id,
+                            "user_message": top_loop.user_message or top_loop.topic,
+                            "persona_state": top_loop.persona_state_at_time or "sleeping",
+                            "time_str": time_desc
+                        })
 
             # Reset unreplied counter and unpause spontaneous reachouts
             relationship.unreplied_spontaneous_count = 0
@@ -529,6 +541,22 @@ class Orchestrator:
             # Fetch today's continuity notes up to current time (Section C)
             daily_notes = await continuity_service.get_daily_notes_for_time(session, relationship.persona_id, now)
 
+            # Query last 15 assistant messages for "things you already said"
+            past_asst_stmt = (
+                select(Message)
+                .where(
+                    and_(
+                        Message.relationship_id == relationship.id,
+                        Message.role == "assistant",
+                        Message.status == "active"
+                    )
+                )
+                .order_by(Message.created_at.desc(), Message.sequence_order.desc())
+                .limit(15)
+            )
+            past_asst_rows = (await session.execute(past_asst_stmt)).scalars().all()
+            things_already_said = [m.content for m in reversed(past_asst_rows) if m.content and m.content.strip()]
+
             # Availability state & propensity hints
             ist_ctx = get_ist_context(now)
             routine_state = ist_ctx.get("routine_state", "free")
@@ -548,6 +576,8 @@ class Orchestrator:
                 "memories": scoped_memories,
                 "stored_facts": structured_facts,
                 "daily_notes": daily_notes,
+                "things_already_said": things_already_said,
+                "open_loops": passed_open_loops,
                 "propensity_hint": propensity_hint_str,
                 "recent_messages": recent_messages,
                 "is_ai_query": is_ai_query,
@@ -571,11 +601,14 @@ class Orchestrator:
             # Post-check validation and fact contradiction check
             recent_asst_msgs = [m.get("content", "") for m in recent_messages if m.get("role") in ("assistant", "model")]
             sanitized_chunks = []
+            seen_chunk_norms = set()
             for c in response.chunks:
                 _, san, _ = validate_and_sanitize_response(str(c), recent_asst_msgs, combined_text, structured_facts)
-                san = fix_male_grammar(san)
-                if san.strip():
-                    sanitized_chunks.append(san.strip())
+                san = fix_male_grammar(san).strip()
+                norm = re.sub(r"[^\w\s]", "", san.lower()).strip()
+                if san and norm not in seen_chunk_norms:
+                    seen_chunk_norms.add(norm)
+                    sanitized_chunks.append(san)
             response.chunks = sanitized_chunks
             response.reply_text = " ".join(sanitized_chunks)
 
@@ -668,9 +701,10 @@ class Orchestrator:
                 user_msg_records.append(u_rec)
             await session.flush()
 
-            # Step 9: Persist Assistant Chunks with Sequential deliver_at
+            # Step 9: Persist Assistant Chunks with Sequential deliver_at & generation idempotency
             chunk_details = []
             cumulative_typing_offset = 0.0
+            generation_id = str(uuid.uuid4())
 
             if has_reply:
                 for idx, chunk_text in enumerate(response.chunks):
@@ -683,7 +717,8 @@ class Orchestrator:
                         "model": getattr(response, "model", "default"),
                         "availability_action": action,
                         "delay_seconds": delay_sec,
-                        "typing_duration": typing_dur
+                        "typing_duration": typing_dur,
+                        "generation_id": generation_id
                     }
 
                     asst_rec = Message(
@@ -710,6 +745,11 @@ class Orchestrator:
 
                     # Schedule in-process precision delivery worker
                     asyncio.create_task(cls._schedule_in_process_delivery(asst_rec.id, relationship.id, chunk_deliver_at))
+
+                # If an open loop was passed and Aanya replied, resolve it so it never repeats
+                if passed_open_loops:
+                    for ol_item in passed_open_loops:
+                        await memory_service.resolve_open_loop(session, ol_item["id"])
 
             logger.info(
                 "[LLM] Message turn completed: provider=%s model=%s action=%s delay=%.1fs seen_in=%.1fs chunks=%d",
@@ -767,6 +807,49 @@ class Orchestrator:
                     text=combined_text,
                     now=now
                 )
+
+            # State-driven open loop tracking (Per approved Round 3 Realism Plan modification 5)
+            # Create open loop if: user message while asleep, ignored, delayed > 3h, or LLM flagged open_loop
+            is_state_open_loop = (
+                routine_state == "sleeping"
+                or action == "ignore_until_free"
+                or delay_sec >= 10800
+                or bool(getattr(response, "open_loop", False))
+            )
+            if is_state_open_loop:
+                loop_topic = "sleep_dropoff" if routine_state == "sleeping" else ("left_on_read" if action == "ignore_until_free" else "delayed_followup")
+                loop_type = "sleep_dropoff" if routine_state == "sleeping" else "delayed_reply"
+
+                existing_loop_stmt = (
+                    select(OpenLoop)
+                    .where(
+                        and_(
+                            OpenLoop.relationship_id == relationship.id,
+                            OpenLoop.status == "open",
+                            OpenLoop.loop_type == loop_type
+                        )
+                    )
+                    .order_by(OpenLoop.last_relevant_at.desc())
+                    .limit(1)
+                )
+                existing_loop = (await session.execute(existing_loop_stmt)).scalar_one_or_none()
+                if existing_loop:
+                    existing_loop.user_message = combined_text[:500]
+                    existing_loop.persona_state_at_time = routine_state
+                    existing_loop.last_relevant_at = now
+                    existing_loop.expires_at = now + timedelta(hours=getattr(settings, "OPEN_LOOP_EXPIRY_HOURS", 36))
+                else:
+                    await memory_service.track_open_loop(
+                        session=session,
+                        relationship_id=relationship.id,
+                        user_id=user.id,
+                        persona_id=relationship.persona_id,
+                        topic=loop_topic,
+                        user_message=combined_text[:500],
+                        persona_state_at_time=routine_state,
+                        loop_type=loop_type,
+                        expires_at=now + timedelta(hours=getattr(settings, "OPEN_LOOP_EXPIRY_HOURS", 36))
+                    )
 
             if response.stage_transition and response.stage_transition != relationship.relationship_stage:
                 relationship.relationship_stage = response.stage_transition

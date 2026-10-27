@@ -619,6 +619,19 @@ class SchedulerService:
                 # Fetch memory facts
                 stored_facts = await memory_service.get_structured_facts(s, rel.id)
 
+                # Fetch active open loops (left-hanging conversations)
+                raw_loops = await memory_service.get_open_loops(s, rel.id)
+                formatted_loops = []
+                for ol in raw_loops:
+                    delta_ol = (now - to_utc(ol.last_relevant_at)).total_seconds() if ol.last_relevant_at else 0
+                    time_desc = f"{int(delta_ol // 3600)}h ago" if delta_ol >= 3600 else f"{int(delta_ol // 60)}m ago"
+                    formatted_loops.append({
+                        "id": ol.id,
+                        "user_message": ol.user_message or ol.topic,
+                        "persona_state": ol.persona_state_at_time or "sleeping",
+                        "time_str": time_desc
+                    })
+
                 # Derive Aanya's mood
                 mood = derive_aanya_mood(ist_info, hours_user, hours_spont, recent_messages)
 
@@ -633,6 +646,7 @@ class SchedulerService:
                     "stored_facts": stored_facts,
                     "daily_notes": daily_notes,
                     "had_unanswered_message": had_unanswered_message,
+                    "open_loops": formatted_loops,
                     "relationship_id": rel.id,
                     "user_id": rel.user_id,
                     "current_time": now
@@ -691,6 +705,11 @@ class SchedulerService:
                     rel.last_spontaneous_at = now
                     rel.spontaneous_daily_count += 1
                     rel.unreplied_spontaneous_count += 1
+
+                    # Resolve any open loops that were just raised
+                    for ol_item in formatted_loops:
+                        await memory_service.resolve_open_loop(s, ol_item["id"])
+
                     await s.commit()
 
                     if is_online:

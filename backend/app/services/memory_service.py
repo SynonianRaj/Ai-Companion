@@ -1,9 +1,10 @@
 import re
 from typing import List, Optional, Dict, Any
-from datetime import datetime, timezone
-from sqlalchemy import select, and_, delete
+from datetime import datetime, timezone, timedelta
+from sqlalchemy import select, and_, delete, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.db.models import Memory, OpenLoop
+from backend.app.db.session import to_utc
 from backend.app.services.clock_service import ClockService
 
 
@@ -292,16 +293,28 @@ class MemoryService:
         user_id: str,
         persona_id: str,
         topic: str,
-        origin_memory_id: Optional[str] = None
+        origin_memory_id: Optional[str] = None,
+        user_message: Optional[str] = None,
+        persona_state_at_time: Optional[str] = None,
+        loop_type: str = "departure",
+        expires_at: Optional[datetime] = None
     ) -> OpenLoop:
+        now = to_utc(ClockService.now())
+        if expires_at is None:
+            expires_at = now + timedelta(hours=36)
+
         loop = OpenLoop(
             relationship_id=relationship_id,
             user_id=user_id,
             persona_id=persona_id,
             topic=topic,
             origin_memory_id=origin_memory_id,
+            user_message=user_message,
+            persona_state_at_time=persona_state_at_time,
+            loop_type=loop_type,
             status="open",
-            last_relevant_at=ClockService.now()
+            last_relevant_at=now,
+            expires_at=expires_at
         )
         session.add(loop)
         await session.flush()
@@ -312,6 +325,23 @@ class MemoryService:
         session: AsyncSession,
         relationship_id: str
     ) -> List[OpenLoop]:
+        now = to_utc(ClockService.now())
+        # First expire old loops (> 36 hours)
+        expire_stmt = (
+            update(OpenLoop)
+            .where(
+                and_(
+                    OpenLoop.relationship_id == relationship_id,
+                    OpenLoop.status == "open",
+                    OpenLoop.expires_at.is_not(None),
+                    OpenLoop.expires_at <= now
+                )
+            )
+            .values(status="expired")
+            .execution_options(synchronize_session=False)
+        )
+        await session.execute(expire_stmt)
+
         stmt = (
             select(OpenLoop)
             .where(
@@ -324,6 +354,22 @@ class MemoryService:
         )
         result = await session.execute(stmt)
         return list(result.scalars().all())
+
+    @staticmethod
+    async def resolve_open_loop(
+        session: AsyncSession,
+        loop_id: str
+    ) -> bool:
+        now = to_utc(ClockService.now())
+        stmt = (
+            update(OpenLoop)
+            .where(OpenLoop.id == loop_id)
+            .values(status="resolved", raised_at=now, last_relevant_at=now)
+            .execution_options(synchronize_session=False)
+        )
+        res = await session.execute(stmt)
+        await session.flush()
+        return res.rowcount > 0
 
 
 memory_service = MemoryService()

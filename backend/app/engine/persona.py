@@ -187,11 +187,13 @@ def get_ist_context(current_time: Optional[datetime] = None) -> Dict[str, Any]:
 
 
 # ============================================================================
-# 3. FEW-SHOT CONVERSATIONS (10 high-quality WhatsApp voice examples)
+# 3. FEW-SHOT CONVERSATIONS (18 authentic Roman Hinglish WhatsApp voice examples)
 # ============================================================================
 
 FEW_SHOT_CONVERSATIONS: List[Dict[str, Any]] = [
     {
+        "id": 1,
+        "situation": "casual_flow",
         "description": "Direct answer first + casual check-in",
         "messages": [
             {"role": "user", "content": "kya kr rhi ho abhi?"},
@@ -199,6 +201,8 @@ FEW_SHOT_CONVERSATIONS: List[Dict[str, Any]] = [
         ]
     },
     {
+        "id": 2,
+        "situation": "clarification",
         "description": "User clarification / 'Mtlb?' handled by explaining previous meaning",
         "messages": [
             {"role": "assistant", "content": "aaj client call ne poora dimag nichod diya sach me"},
@@ -207,21 +211,27 @@ FEW_SHOT_CONVERSATIONS: List[Dict[str, Any]] = [
         ]
     },
     {
-        "description": "User whining / 'Kyuuu'",
+        "id": 3,
+        "situation": "sleepy",
+        "description": "User whining / 'Kyuuu' handled in pure Hinglish",
         "messages": [
             {"role": "assistant", "content": "aaj thoda jaldi sona padega mujhe"},
             {"role": "user", "content": "Kyuuu"},
-            {"role": "assistant", "content": "kyunki kal subah 9 baje client presentation hai meri\nneend bhi poori karni hai thodi haha"}
+            {"role": "assistant", "content": "kyunki kal subah client presentation hai meri, neend poori karni hai thodi haha"}
         ]
     },
     {
-        "description": "Weekend routine - no office strictly",
+        "id": 4,
+        "situation": "weekend",
+        "description": "Weekend routine - no office strictly in natural Hinglish",
         "messages": [
             {"role": "user", "content": "weekend hai aaj, kya plan?"},
-            {"role": "assistant", "content": "aaj toh no office work strictly haha\n12th main pe ek book cafe jane ka soch rahi hoon, tumhara kya scene hai?"}
+            {"role": "assistant", "content": "aaj toh koi office ka kaam nahi haha\n12th main pe ek book cafe jane ka soch rahi hoon, tumhara kya scene hai?"}
         ]
     },
     {
+        "id": 5,
+        "situation": "instagram_deflect",
         "description": "Instagram query natural deflection",
         "messages": [
             {"role": "user", "content": "Instagram id kya hai tumhari?"},
@@ -229,13 +239,17 @@ FEW_SHOT_CONVERSATIONS: List[Dict[str, Any]] = [
         ]
     },
     {
+        "id": 6,
+        "situation": "delhi_nostalgia",
         "description": "Grounded Delhi hometown reflection",
         "messages": [
             {"role": "user", "content": "delhi mein thand start ho gayi abhi"},
-            {"role": "assistant", "content": "sach mein? delhi ki winter vibes are best yaar... subah ki chai aur dhoop miss ho rahi hai\ntum delhi me kahan rehte ho waise?"}
+            {"role": "assistant", "content": "sach mein? delhi ki sardi mast hoti hai yaar... subah ki chai aur dhoop miss ho rahi hai\ntum delhi me kahan rehte ho waise?"}
         ]
     },
     {
+        "id": 7,
+        "situation": "unsure_fact",
         "description": "Unsure fact handling ('pata nahi')",
         "messages": [
             {"role": "user", "content": "kal jo movie release hui thi kaisi hai?"},
@@ -243,6 +257,8 @@ FEW_SHOT_CONVERSATIONS: List[Dict[str, Any]] = [
         ]
     },
     {
+        "id": 8,
+        "situation": "ai_disclosure",
         "description": "Honest AI disclosure when sincerely asked",
         "messages": [
             {"role": "user", "content": "kya tum sach mein ek real ladki ho ya AI?"},
@@ -250,6 +266,8 @@ FEW_SHOT_CONVERSATIONS: List[Dict[str, Any]] = [
         ]
     },
     {
+        "id": 9,
+        "situation": "sleepy",
         "description": "Late night / sleepy brief reply",
         "messages": [
             {"role": "user", "content": "so gayi kya?"},
@@ -257,13 +275,140 @@ FEW_SHOT_CONVERSATIONS: List[Dict[str, Any]] = [
         ]
     },
     {
+        "id": 10,
+        "situation": "casual_flow",
         "description": "Typo'd user Hinglish & work empathy",
         "messages": [
             {"role": "user", "content": "bhot tired hu yr office me"},
             {"role": "assistant", "content": "arrey thoda water break lo na\nkab tak free hoge aaj?"}
         ]
+    },
+    {
+        "id": 11,
+        "situation": "sleepy",
+        "description": "Late night groggy reply with no trailing question",
+        "messages": [
+            {"role": "user", "content": "jag rahi ho kya?"},
+            {"role": "assistant", "content": "haan bed pe hi hoon... aankhein band ho rahi hain bas 😴"}
+        ]
+    },
+    {
+        "id": 12,
+        "situation": "teasing",
+        "description": "Teasing and playful banter back without formal excuse",
+        "messages": [
+            {"role": "user", "content": "din bhar bas chai aur cold brew peeti rehti ho, aur koi kaam nahi hai?"},
+            {"role": "assistant", "content": "oye, cold brew fuel hai mera samjhe! tum batao apna 😜"}
+        ]
+    },
+    {
+        "id": 13,
+        "situation": "repeat_question",
+        "description": "Handling repeated question like a human without repeating pitch",
+        "messages": [
+            {"role": "user", "content": "laptop pe kya design bana rahi ho?"},
+            {"role": "assistant", "content": "bola na, checkout wala screen abhi tak wrap nahi hua 💀"}
+        ]
+    },
+    {
+        "id": 14,
+        "situation": "leading_question",
+        "description": "Gently catching false assumption instead of meekly agreeing",
+        "messages": [
+            {"role": "user", "content": "tum kal Mumbai gayi thi na flight se?"},
+            {"role": "assistant", "content": "nahi re, main toh Bangalore mein hi thi haha, Mumbai kahan se aa gaya?"}
+        ]
+    },
+    {
+        "id": 15,
+        "situation": "bad_day",
+        "description": "Relatable mild complaint and personal opinion",
+        "messages": [
+            {"role": "user", "content": "aaj ka din kaisa raha?"},
+            {"role": "assistant", "content": "thoda irritating tha sach bolun toh... client ne teen baar button colors badalwa diye"}
+        ]
+    },
+    {
+        "id": 16,
+        "situation": "flirty",
+        "description": "Warm witty banter without being overly dramatic",
+        "messages": [
+            {"role": "user", "content": "aaj kaafi der baad yaad kiya tumne"},
+            {"role": "assistant", "content": "accha ji? yaad toh subah se hi aa rahi thi, bas laptop ne bandh rakha tha :)"}
+        ]
+    },
+    {
+        "id": 17,
+        "situation": "left_on_read",
+        "description": "Casual catch-up after multi-hour busy gap",
+        "messages": [
+            {"role": "user", "content": "suno free ho?"},
+            {"role": "assistant", "content": "sorry yaar call pe phans gayi thi client ke saath! kya bol rahe the?"}
+        ]
+    },
+    {
+        "id": 18,
+        "situation": "opinion_query",
+        "description": "Asking user's quick opinion on something casual",
+        "messages": [
+            {"role": "user", "content": "free ho?"},
+            {"role": "assistant", "content": "haan free hoon! ek cheez pe opinion chahiye tha tumhara agar busy nahi ho toh"}
+        ]
     }
 ]
+
+
+def select_relevant_few_shots(
+    user_message: str = "",
+    routine_state: str = "free",
+    has_open_loop: bool = False,
+    is_repeated_query: bool = False,
+    is_teasing: bool = False,
+    is_leading_query: bool = False,
+    count: int = 4
+) -> List[Dict[str, Any]]:
+    """
+    Dynamically selects the 4-5 most situationally relevant few-shot conversations
+    to keep prompt token size tight and focused.
+    """
+    priority_situations = []
+
+    u_lower = user_message.lower()
+
+    if routine_state == "sleeping" or any(w in u_lower for w in ["so gayi", "so gaye", "neend", "jag rahi"]):
+        priority_situations.extend(["sleepy", "casual_flow"])
+    elif has_open_loop:
+        priority_situations.extend(["left_on_read", "sleepy", "casual_flow"])
+    elif is_repeated_query:
+        priority_situations.extend(["repeat_question", "clarification", "casual_flow"])
+    elif is_leading_query or any(w in u_lower for w in ["tum kal", "tum toh", "tumhara bhai toh"]):
+        priority_situations.extend(["leading_question", "unsure_fact", "casual_flow"])
+    elif is_teasing or any(w in u_lower for w in ["hamesha", "koi kaam nahi", "sirf chai", "faltu", "haha"]):
+        priority_situations.extend(["teasing", "flirty", "bad_day"])
+    else:
+        priority_situations.extend(["casual_flow", "opinion_query", "bad_day", "delhi_nostalgia"])
+
+    selected = []
+    selected_ids = set()
+
+    # Pass 1: Add by priority situations
+    for sit in priority_situations:
+        for ex in FEW_SHOT_CONVERSATIONS:
+            if ex["situation"] == sit and ex["id"] not in selected_ids:
+                selected.append(ex)
+                selected_ids.add(ex["id"])
+                if len(selected) >= count:
+                    return selected
+
+    # Pass 2: Fill remaining up to count
+    for ex in FEW_SHOT_CONVERSATIONS:
+        if ex["id"] not in selected_ids:
+            selected.append(ex)
+            selected_ids.add(ex["id"])
+            if len(selected) >= count:
+                break
+
+    return selected
 
 
 # ============================================================================
@@ -407,10 +552,44 @@ def check_prompt_leakage(text: str) -> Tuple[bool, List[str]]:
     return (len(matched) == 0, matched)
 
 
+# Meta-chat patterns (hard reject vs log-only)
+HARD_META_CHAT_PATTERNS = [
+    re.compile(r"\b(past\s+messages?|previous\s+messages?|chat\s+history|system\s+prompt|pichle\s+messages?)\b", re.IGNORECASE),
+]
+
+LOG_ONLY_META_CHAT_PATTERNS = [
+    re.compile(r"\b(context|typos?|mix\s+karke)\b", re.IGNORECASE),
+]
+
+
+def check_meta_chat_talk(text: str, is_sincere_ai_query: bool = False) -> Tuple[bool, Optional[str]]:
+    """
+    Hard rejects meta-chat references: 'past messages', 'previous messages', 'chat history',
+    'system prompt', 'pichle messages'.
+    Logs warnings for: 'context', 'typos', 'mix karke'.
+    Never blocks sincere AI disclosure queries.
+    """
+    if is_sincere_ai_query:
+        return True, None
+
+    for p in HARD_META_CHAT_PATTERNS:
+        m = p.search(text)
+        if m:
+            return False, f"meta_chat_hard_reject:{m.group(0)}"
+
+    for p in LOG_ONLY_META_CHAT_PATTERNS:
+        m = p.search(text)
+        if m:
+            logger.info("[Meta-Chat Log-Only] Flagged meta token '%s' in: '%s'", m.group(0), text)
+
+    return True, None
+
+
 def check_truncation(chunks: Any, finish_reason: Optional[str] = None) -> Tuple[bool, str]:
     """
     Checks if text generation was cut off.
     True means clean, False means truncated.
+    Treats replies ending in a dangling comma, dash, slash, or half-finished clause as truncated.
     """
     if finish_reason in ("length", "MAX_TOKENS", "LENGTH"):
         return False, f"finish_reason_{finish_reason}"
@@ -427,12 +606,21 @@ def check_truncation(chunks: Any, finish_reason: Optional[str] = None) -> Tuple[
     # 1. Single or two character fragment like "w"
     if len(last_chunk) <= 2 and not last_chunk.endswith((".", "!", "?", "☕", "😴", "✨", ":)", ";)")):
         return False, f"truncated_short_fragment:{last_chunk}"
+
+    # 2. Check for trailing dangling punctuation (e.g., 'tum suna,')
+    if last_chunk.endswith((",", "-", "/")):
+        return False, f"truncated_dangling_punct:{last_chunk[-1]}"
         
-    # 2. Check if cut off abruptly mid-word or ending with dangling fragments like "aak", "par client ki", "mera bhi abhi"
+    # 3. Check if cut off abruptly mid-word or ending with dangling fragments/conjunctions
     words = [w for w in re.split(r"[\s\.\,\…]+", last_chunk) if w]
     if words and not last_chunk.endswith((".", "!", "?", "☕", "😴", "✨", "🎧", "❤️", "😊", "😂", ":)", ";)")):
         last_word = words[-1].lower()
-        if last_word in ("w", "aak", "ki", "abhi") or last_chunk.endswith(("ki", "abhi", "par")):
+        dangling_words = (
+            "w", "aak", "ki", "abhi", "par", "aur", "lekin", "kyunki", "kyu", "kyun",
+            "jab", "agar", "jaise", "mera", "meri", "mere", "tera", "teri", "tere",
+            "se", "ko", "toh", "ka", "ke"
+        )
+        if last_word in dangling_words:
             return False, f"truncated_trailing_fragment:{last_word}"
 
     return True, ""
@@ -456,24 +644,29 @@ def check_stutter_repetition(text: str) -> Tuple[bool, str]:
 
 
 def check_near_identical(text: str, recent_assistant_messages: List[str]) -> Tuple[bool, str]:
-    """Returns False if text is identical or near-identical (similarity > 0.85) to recent assistant message."""
+    """
+    Checks if a bubble with >= 5 words has similarity > 0.8 against any of her last 10 assistant messages.
+    Short bubbles (< 5 words like 'hmm', 'haan', 'acha') are exempt.
+    """
     if not recent_assistant_messages:
         return True, ""
     
     clean_text = re.sub(r"[^\w\s]", "", text.lower()).strip()
-    words_a = set(clean_text.split())
-    if not words_a:
+    words_a = clean_text.split()
+    if len(words_a) < 5:
         return True, ""
         
-    for prev in recent_assistant_messages[-2:]:
+    set_a = set(words_a)
+    for prev in recent_assistant_messages[-10:]:
         clean_prev = re.sub(r"[^\w\s]", "", prev.lower()).strip()
-        words_b = set(clean_prev.split())
-        if not words_b:
+        words_b = clean_prev.split()
+        if len(words_b) < 5:
             continue
-        intersection = words_a.intersection(words_b)
-        union = words_a.union(words_b)
+        set_b = set(words_b)
+        intersection = set_a.intersection(set_b)
+        union = set_a.union(set_b)
         jaccard = len(intersection) / len(union) if union else 0.0
-        if jaccard > 0.85:
+        if jaccard > 0.8:
             return False, f"near_identical_to_prev_jaccard_{round(jaccard, 2)}"
     return True, ""
 
@@ -525,10 +718,17 @@ def run_hard_validators(
     chunks: List[str],
     user_message: str,
     recent_assistant_messages: List[str],
-    finish_reason: Optional[str] = None
+    finish_reason: Optional[str] = None,
+    is_sincere_ai_query: bool = False
 ) -> Tuple[bool, List[str]]:
     """
-    Executes all HARD validators (prompt leakage, truncation, stutter, near-identical, pure echo).
+    Executes all HARD validators:
+    - Prompt leakage
+    - Truncation (including dangling comma & hanging clauses)
+    - Stutter / Repetition
+    - Near-identical (bubbles >= 5 words against her last 10 messages)
+    - Meta-chat hard rejection ('past messages', 'system prompt', etc.)
+    - Pure Echo
     Returns: (is_valid, failure_reasons).
     """
     reasons = []
@@ -540,22 +740,29 @@ def run_hard_validators(
         reasons.append(f"prompt_leakage:{','.join(matched)}")
         logger.warning("Prompt leakage detected in chunk: matched=%s raw_output=%r", matched, full_text)
 
-    # 2. Truncation
+    # 2. Meta-chat talk hard reject
+    is_meta_clean, meta_reason = check_meta_chat_talk(full_text, is_sincere_ai_query=is_sincere_ai_query)
+    if not is_meta_clean:
+        reasons.append(meta_reason)
+
+    # 3. Truncation
     is_not_truncated, trunc_reason = check_truncation(chunks, finish_reason)
     if not is_not_truncated:
         reasons.append(trunc_reason)
 
-    # 3. Stutter / Repetition
+    # 4. Stutter / Repetition
     is_clean_stutter, stutter_reason = check_stutter_repetition(full_text)
     if not is_clean_stutter:
         reasons.append(stutter_reason)
 
-    # 4. Near-identical
-    is_not_near_id, near_id_reason = check_near_identical(full_text, recent_assistant_messages)
-    if not is_not_near_id:
-        reasons.append(near_id_reason)
+    # 5. Near-identical against her last 10 assistant messages (per chunk for bubbles >= 5 words)
+    for c in chunks:
+        is_not_near_id, near_id_reason = check_near_identical(c, recent_assistant_messages)
+        if not is_not_near_id:
+            reasons.append(near_id_reason)
+            break
 
-    # 5. Pure Echo
+    # 6. Pure Echo
     is_not_echo, echo_reason = check_pure_echo(full_text, user_message)
     if not is_not_echo:
         reasons.append(echo_reason)
@@ -666,7 +873,9 @@ def build_system_prompt(
     context: Dict[str, Any],
     stored_facts: Optional[Dict[str, List[str]]] = None,
     allow_question: bool = True,
-    allow_arre: bool = True
+    allow_arre: bool = True,
+    things_already_said: Optional[List[str]] = None,
+    open_loops: Optional[List[Dict[str, Any]]] = None
 ) -> str:
     """
     Assembles the complete system prompt for Gemini/Groq including:
@@ -675,13 +884,17 @@ def build_system_prompt(
     - Availability & Timing Rules
     - Daily Notes (Continuity)
     - Stored Memory Facts (user & Aanya)
-    - Hard Rules & 10 WhatsApp-style Few-Shot Examples
+    - Things Already Said in conversation (deduplication & human reaction)
+    - Open Loops (left-hanging follow-up guidance)
+    - Dynamic 4-5 Situation-Based Few-Shot Examples
     - Strict Output JSON schema
     """
     current_time = context.get("current_time")
     ist_info = get_ist_context(current_time)
     daily_notes = context.get("daily_notes", [])
     propensity_hint = context.get("propensity_hint", "")
+    user_msg = context.get("user_message", "")
+    routine_state = ist_info.get("routine_state", "free")
 
     # Format stored memory facts
     facts_block = ""
@@ -718,9 +931,61 @@ def build_system_prompt(
             notes_lines.append(f"- {n}")
         notes_block = "\n" + "\n".join(notes_lines) + "\n"
 
-    # Format few-shot examples
+    # Things already said section (anti-repetition)
+    already_said_block = ""
+    if things_already_said:
+        as_lines = ["Things you already said in this conversation (DO NOT repeat the same explanations!):"]
+        for prev_said in things_already_said[-12:]:
+            clean_s = prev_said.strip()
+            if clean_s:
+                as_lines.append(f"- \"{clean_s}\"")
+        if len(as_lines) > 1:
+            already_said_block = "\n" + "\n".join(as_lines) + """
+CRITICAL REPETITION RULE:
+If the user asks again about something you already talked about (e.g. what design you're working on, where you are, what you're doing):
+- React like a real human! Acknowledge having already said it: e.g. "bola na, checkout wala screen abhi tak phansi hoon", "wahi, abhi tak khatam nahi hua", "bataya toh tha haha".
+- Or give a fresh micro-progress detail instead of reciting the same answer.
+"""
+
+    # Open loops block (left-hanging conversation follow-up)
+    open_loop_block = ""
+    if open_loops:
+        ol = open_loops[0]
+        u_said = ol.get("user_message", "")
+        time_info = ol.get("time_str", "earlier")
+        open_loop_block = f"""
+### OPEN CONVERSATION LOOP:
+Earlier, you fell asleep or went quiet while chatting.
+The user's last message was: "{u_said}" ({time_info}).
+You are now free. If you bring it up (about 70-80% of the time), react like a real person waking up or checking back in.
+Here are 5 varied examples of the vibe (DO NOT COPY THEM VERBATIM, adopt the natural tone):
+1. "sorry yaar kal raat thaki thi toh so gayi, kab aankh lag gayi pata hi nahi chala. kya bol rahe the waise?"
+2. "arre kal raat phone haath mein hi neend aa gayi thi 🙈 uth gaye kya? kya keh rahe the?"
+3. "morning! kal raat so gayi thi achanak se, could not reply. sab thik?"
+4. "hey uth gaye? kal raat literally bed pe girte hi so gayi thi haha. tumhara message subah dekha"
+5. "good morning! kal conversation ke beech mein hi aankh lag gayi meri, sorry! continue karein?"
+"""
+
+    # Dynamic few-shot selection (4-5 situation matches)
+    is_repeated_query = False
+    if things_already_said and user_msg:
+        u_words = set(re.findall(r"\b\w{3,}\b", user_msg.lower()))
+        for past_s in things_already_said:
+            p_words = set(re.findall(r"\b\w{3,}\b", past_s.lower()))
+            if len(u_words.intersection(p_words)) >= 2:
+                is_repeated_query = True
+                break
+
+    selected_few_shots = select_relevant_few_shots(
+        user_message=user_msg,
+        routine_state=routine_state,
+        has_open_loop=bool(open_loops),
+        is_repeated_query=is_repeated_query,
+        count=4
+    )
+
     examples_text = ""
-    for idx, ex in enumerate(FEW_SHOT_CONVERSATIONS, 1):
+    for idx, ex in enumerate(selected_few_shots, 1):
         examples_text += f"\nExample {idx} ({ex['description']}):\n"
         for m in ex["messages"]:
             r = "User" if m["role"] == "user" else "Aanya"
@@ -769,18 +1034,25 @@ Key identity constraints:
 4. ARRE LIMIT: Do not start messages with "Arre/Arre yaar" frequently (max 1 in 10).
 5. QUESTION LIMIT: Don't ask a question in more than 1 of every 3 replies. NEVER ask generic questions like "tera mood kaisa hai" or "kya chal raha hai" unprompted.
 6. DIRECT ANSWER: Always answer the user's actual question first, in 1-2 short lines.
-7. LANGUAGE: Reply in natural Hinglish in Roman script matching the user's tone. Never produce formal English paragraphs.
+7. LANGUAGE: Reply in natural Hinglish in Roman script matching the user's tone. Never produce formal English paragraphs. Only simple, everyday spoken Hinglish. No poetic or metaphorical lines (never say 'nind ko neechhe kheench deti hai' or similar). No invented words. If unsure, say less.
+8. META-CHAT FORBIDDEN: NEVER talk about the chat itself (never mention 'past messages', 'previous messages', 'chat history', 'system prompt', 'context', or 'typos'). If you don't remember something, just say "yaad nahi yaar" or "bhool gayi".
 {notes_block}
-### 4. STYLE REQUIREMENTS
+{already_said_block}
+{open_loop_block}
+### 4. PERSONALITY & STYLE REQUIREMENTS
 - Write like WhatsApp: lowercase mostly, 1-3 short bubbles.
-- Occasional natural typos are okay.
-- Emoji in about 1 of every 5 messages (~20%), not in every line.
-- Do not repeat user's words robotically.
+- You have personal opinions, preferences, and small complaints (mild designer frustration with client feedback, hating morning alarms).
+- Short casual replies like "hmm", "haan", "lol", "acha", "sahi hai" are completely fine.
+- Answer first; ask a question ONLY when genuinely curious (never obligatorily at the end of every message).
+- Do not give reasons or justifications nobody asked for.
+- When teased or caught in contradiction, laugh or tease back ("oye!", "haha bhool gayi"); never invent elaborate excuses or say "galti se galat likh diya".
+- Fact check leading questions: if user assumes false facts (e.g. that you visited Mumbai or your brother is an engineer), gently correct them using your persona facts and daily notes.
 
 ### 5. TURN-SPECIFIC INSTRUCTION
 {turn_rules_str}
 {facts_section}
 ### 7. FEW-SHOT EXAMPLES (MATCH THIS VOICE EXACTLY)
+NOTE: Never copy the few-shot example sentences verbatim. Match the voice, tone, and brevity.
 {examples_text}
 
 ### 8. STRICT OUTPUT FORMAT
@@ -788,7 +1060,8 @@ You must respond ONLY with a strict JSON object matching this schema (no markdow
 {{
   "availability_action": "reply_now" or "reply_later" or "ignore_until_free",
   "delay_seconds": 0,
-  "chunks": ["bubble 1", "bubble 2 (optional)"]
+  "chunks": ["bubble 1", "bubble 2 (optional)"],
+  "open_loop": false
 }}
 If action is "ignore_until_free", "chunks" should be empty [].
 If action is "reply_later", specify delay_seconds (e.g. 120 to 1800 if busy, or minutes/hours if sleeping)."""
@@ -853,7 +1126,8 @@ def build_heartbeat_prompt(
     recent_messages: List[Dict[str, str]],
     stored_facts: Optional[Dict[str, List[str]]] = None,
     daily_notes: Optional[List[str]] = None,
-    had_unanswered_message: bool = False
+    had_unanswered_message: bool = False,
+    open_loops: Optional[List[Dict[str, Any]]] = None
 ) -> str:
     """
     Constructs the prompt for the LLM to decide whether to send an unprompted
@@ -888,6 +1162,23 @@ def build_heartbeat_prompt(
         role = "User" if m.get("role") == "user" else "Aanya"
         chat_history_str += f"{role}: {m.get('content', '')}\n"
 
+    open_loop_guidance = ""
+    if open_loops:
+        ol = open_loops[0]
+        u_msg = ol.get("user_message", "")
+        ol_time = ol.get("time_str", "earlier")
+        open_loop_guidance = f"""
+- OPEN CONVERSATION LOOP: You fell asleep or went quiet while chatting earlier / last night.
+  User's last message was: "{u_msg}" ({ol_time}).
+  Now you are awake and free. You can bring it up naturally like a real person waking up or checking back in (70-80% likelihood).
+  Here are 5 varied examples of the vibe (DO NOT COPY THEM VERBATIM):
+  1. "sorry yaar kal raat thaki thi toh so gayi, kab aankh lag gayi pata hi nahi chala. kya bol rahe the waise?"
+  2. "arre kal raat phone haath mein hi neend aa gayi thi 🙈 uth gaye kya? kya keh rahe the?"
+  3. "morning! kal raat so gayi thi achanak se, could not reply. sab thik?"
+  4. "hey uth gaye? kal raat literally bed pe girte hi so gayi thi haha. tumhara message subah dekha"
+  5. "good morning! kal conversation ke beech mein hi aankh lag gayi meri, sorry! continue karein?"
+"""
+
     time_label = f"{ist_info['ist_time']}, {ist_info['day_of_week']}, {ist_info['activity_desc']}"
 
     prompt = f"""You are Aanya. You are deciding whether to reach out to your friend unprompted right now on mobile (WhatsApp).
@@ -904,7 +1195,8 @@ def build_heartbeat_prompt(
 - Current Mood: {mood}
 - Time since user's last message: {time_since_user_str}
 - Time since your last unprompted message: {time_since_unprompted_str}
-{f"- Note: User had messaged you earlier while you were sleeping/busy. You can send a natural late follow-up now (e.g. 'sorry so rahi thi... abhi uthi')." if had_unanswered_message else ""}
+{f"- Note: User had messaged you earlier while you were sleeping/busy. You can send a natural late follow-up now." if had_unanswered_message else ""}
+{open_loop_guidance}
 {notes_block}
 ### 3. STORED FACTS
 {facts_block if facts_block else "No specific profile facts stored yet."}
@@ -924,6 +1216,7 @@ If you decide "send":
 - 1-2 short WhatsApp lines, lowercase mostly.
 - Natural Hinglish, female grammar.
 - Never sound generic ("kya chal raha hai" is banned). Never sound like an AI assistant.
+- If following up on an open loop, do NOT copy example sentences verbatim.
 
 Respond ONLY with a JSON object in this exact schema (no other text):
 {{

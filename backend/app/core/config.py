@@ -21,10 +21,12 @@ class Settings(BaseSettings):
     # Lifecycle constants
     INACTIVITY_EXPIRY_DAYS: int = 15
     INACTIVITY_REMINDER_DAYS: int = 12
+    OPEN_LOOP_EXPIRY_HOURS: int = 36
 
     # LLM Settings (Option 3: Hybrid Architecture)
     LLM_PROVIDER: str = "gemini"  # "gemini", "groq", "mock", "openai"
-    LLM_TEMPERATURE: float = 0.8
+    LLM_TEMPERATURE: float = 0.65
+    LLM_TOP_P: float = 0.9
     GROQ_API_KEY: Union[str, None] = None
     GROQ_MODEL: str = "qwen/qwen3.8-27b"
     GROQ_FALLBACK_MODEL: str = "openai/gpt-oss-20b"
@@ -32,12 +34,16 @@ class Settings(BaseSettings):
     GROQ_FALLBACK_MAX_TOKENS: int = 800
     GEMINI_API_KEY: Union[str, None] = None
     GEMINI_MODEL: str = "gemini-3.5-flash"
+    GEMINI_LITE_MODEL: str = "gemini-3.5-flash-lite"
     GEMINI_MAX_TOKENS: int = 600
     GEMINI_THINKING_BUDGET: int = 0
     OPENAI_API_KEY: Union[str, None] = None
     OPENAI_API_BASE: Union[str, None] = None
     OPENAI_MODEL: str = "gpt-4o-mini"
     RENDER_EXTERNAL_URL: Union[str, None] = None
+
+    # Open Loop Followup Probability
+    OPEN_LOOP_FOLLOWUP_PROBABILITY: float = 0.75
 
     # Availability & Timing Constants (seconds)
     REPLY_DELAY_QUICK_MIN: float = 2.0

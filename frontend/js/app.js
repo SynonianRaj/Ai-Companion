@@ -204,6 +204,7 @@ document.getElementById("onboarding-form").addEventListener("submit", async (e) 
 
 // Load Chat History
 async function loadChatHistory() {
+  clearActiveChunkTimeouts();
   if (state.pendingDeliveryTimer) {
     clearTimeout(state.pendingDeliveryTimer);
     state.pendingDeliveryTimer = null;
@@ -473,6 +474,7 @@ async function flushUserBurst() {
 
   const currentBurst = [...state.userBurstQueue];
   state.userBurstQueue = [];
+  clearActiveChunkTimeouts();
 
   // Update checkmarks on current burst to Delivered (✓✓)
   currentBurst.forEach(item => {
@@ -542,7 +544,17 @@ function scheduleChunkDeliveries(chunkDetails, userBurst) {
     return;
   }
 
-  chunkDetails.forEach((chunk, idx) => {
+  // Deduplicate chunks within the response payload itself as a frontend safeguard
+  const seenTexts = new Set();
+  const uniqueChunks = [];
+  for (const c of chunkDetails) {
+    const trimmed = (c.content || "").trim();
+    if (!trimmed || seenTexts.has(trimmed)) continue;
+    seenTexts.add(trimmed);
+    uniqueChunks.push(c);
+  }
+
+  uniqueChunks.forEach((chunk, idx) => {
     const deliverTime = new Date(chunk.deliver_at).getTime();
     const now = Date.now();
     const waitMs = Math.max(0, deliverTime - now);
@@ -563,7 +575,7 @@ function scheduleChunkDeliveries(chunkDetails, userBurst) {
         isFollowup: idx > 0
       });
 
-      if (idx === chunkDetails.length - 1) {
+      if (idx === uniqueChunks.length - 1) {
         hideSkipWaitButton();
         updatePersonaStatus("Online");
         maybePromptPushPermission();

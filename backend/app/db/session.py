@@ -117,6 +117,20 @@ async def init_db() -> None:
                 await conn.exec_driver_sql("ALTER TABLE relationship_state ADD COLUMN spontaneous_daily_reset_at DATETIME")
             if "unreplied_spontaneous_count" not in rel_cols:
                 await conn.exec_driver_sql("ALTER TABLE relationship_state ADD COLUMN unreplied_spontaneous_count INTEGER DEFAULT 0")
+
+            # Check open_loops table columns
+            res_ol = await conn.exec_driver_sql("PRAGMA table_info(open_loops)")
+            ol_cols = {row[1] for row in res_ol.fetchall()}
+            if "user_message" not in ol_cols:
+                await conn.exec_driver_sql("ALTER TABLE open_loops ADD COLUMN user_message TEXT")
+            if "persona_state_at_time" not in ol_cols:
+                await conn.exec_driver_sql("ALTER TABLE open_loops ADD COLUMN persona_state_at_time VARCHAR(50)")
+            if "loop_type" not in ol_cols:
+                await conn.exec_driver_sql("ALTER TABLE open_loops ADD COLUMN loop_type VARCHAR(50) DEFAULT 'departure'")
+            if "raised_at" not in ol_cols:
+                await conn.exec_driver_sql("ALTER TABLE open_loops ADD COLUMN raised_at DATETIME")
+            if "expires_at" not in ol_cols:
+                await conn.exec_driver_sql("ALTER TABLE open_loops ADD COLUMN expires_at DATETIME")
         else:
             # PostgreSQL
             await conn.exec_driver_sql("ALTER TABLE users ADD COLUMN IF NOT EXISTS city VARCHAR(100);")
@@ -132,6 +146,11 @@ async def init_db() -> None:
             await conn.exec_driver_sql("ALTER TABLE relationship_state ADD COLUMN IF NOT EXISTS spontaneous_daily_count INTEGER DEFAULT 0;")
             await conn.exec_driver_sql("ALTER TABLE relationship_state ADD COLUMN IF NOT EXISTS spontaneous_daily_reset_at TIMESTAMP WITH TIME ZONE;")
             await conn.exec_driver_sql("ALTER TABLE relationship_state ADD COLUMN IF NOT EXISTS unreplied_spontaneous_count INTEGER DEFAULT 0;")
+            await conn.exec_driver_sql("ALTER TABLE open_loops ADD COLUMN IF NOT EXISTS user_message TEXT;")
+            await conn.exec_driver_sql("ALTER TABLE open_loops ADD COLUMN IF NOT EXISTS persona_state_at_time VARCHAR(50);")
+            await conn.exec_driver_sql("ALTER TABLE open_loops ADD COLUMN IF NOT EXISTS loop_type VARCHAR(50) DEFAULT 'departure';")
+            await conn.exec_driver_sql("ALTER TABLE open_loops ADD COLUMN IF NOT EXISTS raised_at TIMESTAMP WITH TIME ZONE;")
+            await conn.exec_driver_sql("ALTER TABLE open_loops ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP WITH TIME ZONE;")
 
         # Backfill deliver_at, seen_at, status, sequence_order for any legacy rows
         await conn.exec_driver_sql("UPDATE messages SET deliver_at = created_at WHERE deliver_at IS NULL")
