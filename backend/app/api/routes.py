@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.core.config import settings
 from backend.app.db.session import get_db, to_utc, engine, init_db
 from backend.app.db.models import (
-    User, Persona, RelationshipState, Conversation, Message,
+    User, Persona, PersonaState, RelationshipState, Conversation, Message,
     SubscriptionEntitlement, UserReport
 )
 from backend.app.services.clock_service import ClockService
@@ -602,6 +602,15 @@ async def internal_database_reset(
         await session.execute(text(f"TRUNCATE TABLE {tbl_names} CASCADE;"))
 
     await session.execute(text("DELETE FROM persona_state;"))
+    aanya_state = PersonaState(
+        persona_id="aanya_v1",
+        current_activity="Sipping cold brew at an Indiranagar cafe while sketching design ideas",
+        current_mood="warm_playful",
+        current_plan="Finishing up a design mockup before heading out for a stroll",
+        simulated_local_time=to_utc(datetime.now(timezone.utc)),
+        state_version=1
+    )
+    session.add(aanya_state)
     await session.commit()
 
     ClockService.reset()

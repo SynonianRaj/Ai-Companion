@@ -195,7 +195,10 @@ async def init_db() -> None:
                 persona_version="v8.0"
             )
             session.add(aanya)
-            
+            await session.commit()
+
+        state = await session.get(PersonaState, "aanya_v1")
+        if not state:
             # Seed initial dynamic state
             aanya_state = PersonaState(
                 persona_id="aanya_v1",
