@@ -2,10 +2,10 @@ import logging
 from datetime import datetime, timezone
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, BackgroundTasks, status
-from sqlalchemy import select, and_
+from sqlalchemy import select, and_, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.core.config import settings
-from backend.app.db.session import get_db, to_utc
+from backend.app.db.session import get_db, to_utc, engine, init_db
 from backend.app.db.models import (
     User, Persona, RelationshipState, Conversation, Message,
     SubscriptionEntitlement, UserReport
@@ -555,4 +555,62 @@ async def subscribe_push_notifications(
         auth=req.auth
     )
     return {"status": "subscribed", "subscription_id": sub.id}
+
+
+@router.api_route("/internal/database/reset", methods=["POST"])
+async def internal_database_reset(
+    request: Request,
+    secret: Optional[str] = Query(None),
+    session: AsyncSession = Depends(get_db)
+):
+    """
+    Secure database reset endpoint for production / staging environments.
+    Clears all user data, messages, conversations, memories, open loops, and rate limits.
+    Re-seeds canonical Persona 1 (Aanya) state.
+    """
+    header_secret = request.headers.get("X-Admin-Secret") or request.headers.get("X-Cron-Secret")
+    auth_token = header_secret or secret
+    if auth_token != settings.CRON_SECRET:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid admin credentials"
+        )
+
+    tables_to_clear = [
+        "messages",
+        "conversations",
+        "memories",
+        "open_loops",
+        "safety_events",
+        "user_reports",
+        "push_subscriptions",
+        "subscription_entitlements",
+        "user_rate_limits",
+        "relationship_state",
+        "users",
+        "persona_daily_notes"
+    ]
+
+    is_sqlite = engine.url.drivername.startswith("sqlite")
+    if is_sqlite:
+        await session.execute(text("PRAGMA foreign_keys = OFF;"))
+        for tbl in tables_to_clear:
+            await session.execute(text(f"DELETE FROM {tbl};"))
+        await session.execute(text("PRAGMA foreign_keys = ON;"))
+    else:
+        tbl_names = ", ".join(tables_to_clear)
+        await session.execute(text(f"TRUNCATE TABLE {tbl_names} CASCADE;"))
+
+    await session.execute(text("DELETE FROM persona_state;"))
+    await session.commit()
+
+    ClockService.reset()
+    await init_db()
+
+    return {
+        "status": "database_reset_complete",
+        "cleared_tables": tables_to_clear,
+        "persona": "aanya_v1",
+        "timestamp": ClockService.now()
+    }
 
