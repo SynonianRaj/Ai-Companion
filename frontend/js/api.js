@@ -162,5 +162,18 @@ export const api = {
     });
     if (!res.ok) throw new Error("Failed to subscribe for push");
     return res.json();
+  },
+
+  async testPush(relationshipId) {
+    const res = await fetch(`${API_BASE}/push/test`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ relationship_id: relationshipId })
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(err.detail || "Failed to trigger test push");
+    }
+    return res.json();
   }
 };

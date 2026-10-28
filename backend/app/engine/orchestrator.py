@@ -61,30 +61,21 @@ class Orchestrator:
         return cls._locks[relationship_id]
 
     @classmethod
-    async def _schedule_in_process_delivery(cls, message_id: str, relationship_id: str, deliver_at: datetime) -> None:
+    async def _schedule_outbox_delivery(cls, deliver_at: datetime) -> None:
         """
-        In-process precision delivery worker: sleeps until deliver_at, then delivers.
-        If user is offline, triggers Web Push.
+        Sleeps until deliver_at, then processes due outbox records.
+        Even if the server restarts or this task is dropped, the persistent
+        outbox in the database is claimed and processed by the scheduler tick!
         """
         now = to_utc(ClockService.now())
-        wait_seconds = max(0.0, (deliver_at - now).total_seconds())
-        await asyncio.sleep(wait_seconds)
+        wait_seconds = max(0.0, (to_utc(deliver_at) - now).total_seconds())
+        if wait_seconds > 0:
+            await asyncio.sleep(wait_seconds)
         try:
             async with async_session_factory() as session:
-                msg = await session.get(Message, message_id)
-                if msg and msg.status == "active":
-                    if not presence_service.is_online(relationship_id):
-                        rel = await session.get(RelationshipState, relationship_id)
-                        if rel:
-                            await push_service.send_push_notification(
-                                session=session,
-                                user_id=rel.user_id,
-                                relationship_id=rel.id,
-                                title="Aanya",
-                                body=msg.content[:100]
-                            )
+                await push_service.process_outbox(session)
         except Exception as e:
-            logger.warning("In-process delivery worker exception: %s", e)
+            logger.warning("Outbox precision delivery worker exception: %s", e)
 
     @classmethod
     async def commit_delivered_side_effects(cls, session: AsyncSession, relationship_id: str) -> None:
@@ -746,6 +737,7 @@ class Orchestrator:
             generation_id = str(uuid.uuid4())
 
             if has_reply:
+                asst_records = []
                 for idx, chunk_text in enumerate(response.chunks):
                     typing_dur = 0.0 if pacing_mode == "turbo" else max(0.8, min(2.5, round(len(chunk_text) * 0.028, 2)))
                     cumulative_typing_offset += typing_dur
@@ -775,15 +767,41 @@ class Orchestrator:
                         metadata_json=meta_json
                     )
                     session.add(asst_rec)
+                    asst_records.append(asst_rec)
+
+                await session.flush()
+
+                for idx, asst_rec in enumerate(asst_records):
                     chunk_details.append({
-                        "content": chunk_text,
-                        "deliver_at": chunk_deliver_at,
-                        "typing_duration_seconds": typing_dur,
-                        "sequence_order": idx
+                        "id": asst_rec.id,
+                        "content": asst_rec.content,
+                        "deliver_at": asst_rec.deliver_at,
+                        "typing_duration_seconds": (asst_rec.metadata_json or {}).get("typing_duration", 1.5),
+                        "sequence_order": asst_rec.sequence_order
                     })
 
-                    # Schedule in-process precision delivery worker
-                    asyncio.create_task(cls._schedule_in_process_delivery(asst_rec.id, relationship.id, chunk_deliver_at))
+                # Enqueue exactly ONE persistent outbox notification for this entire reply turn
+                if asst_records:
+                    primary_rec = asst_records[0]
+                    await push_service.enqueue_outbox_notification(
+                        session=session,
+                        user_id=user.id,
+                        relationship_id=relationship.id,
+                        conversation_id=conversation.id,
+                        message_id=primary_rec.id,
+                        scheduled_at=primary_rec.deliver_at,
+                        title="Aanya",
+                        body=primary_rec.content,
+                        tag=f"aanya-reply-{conversation.id}",
+                        data={
+                            "message_id": primary_rec.id,
+                            "relationship_id": relationship.id,
+                            "conversation_id": conversation.id,
+                            "url": "/"
+                        }
+                    )
+                    # Trigger outbox delivery worker
+                    asyncio.create_task(cls._schedule_outbox_delivery(primary_rec.deliver_at))
 
                 # If an open loop was passed and Aanya replied, resolve it so it never repeats
                 if passed_open_loops:

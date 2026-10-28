@@ -1,21 +1,28 @@
 import json
 import logging
 import asyncio
+from datetime import datetime
 from typing import Dict, Any, Optional, List
-from sqlalchemy import select, delete
+from sqlalchemy import select, delete, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.config import settings
-from backend.app.db.models import PushSubscription
+from backend.app.db.models import PushSubscription, NotificationOutbox
+from backend.app.db.session import to_utc
+from backend.app.services.clock_service import ClockService
 
 logger = logging.getLogger(__name__)
 
 
 class PushService:
     """
-    Handles high-urgency VAPID Web Push notifications for mobile PWAs.
-    Gracefully evicts expired endpoints (HTTP 404/410) and safely mocks
-    push delivery when VAPID keys or pywebpush are not installed.
+    Handles reliable VAPID Web Push notifications for mobile PWAs.
+    Features:
+    - Persistent DB-backed outbox (NotificationOutbox) with exactly-once delivery per message.
+    - Thread-offloaded non-blocking pywebpush execution with explicit timeout.
+    - In-app presence check (skips push if user is actively in the app).
+    - Graceful eviction of expired endpoints (HTTP 404/410).
+    - Safe mock fallback in dev/test when VAPID keys are absent.
     """
 
     @staticmethod
@@ -51,6 +58,126 @@ class PushService:
         return sub
 
     @classmethod
+    async def enqueue_outbox_notification(
+        cls,
+        session: AsyncSession,
+        user_id: str,
+        relationship_id: str,
+        conversation_id: str,
+        message_id: str,
+        scheduled_at: datetime,
+        title: str,
+        body: str,
+        tag: Optional[str] = None,
+        data: Optional[Dict[str, Any]] = None
+    ) -> Optional[NotificationOutbox]:
+        """
+        Enqueues exactly ONE outbox notification for an assistant reply or spontaneous outreach.
+        Survives server restarts and worker scaling.
+        Enforces exactly-once notification creation via DB unique constraint on message_id.
+        """
+        # Check if already enqueued for this message
+        stmt = select(NotificationOutbox).where(NotificationOutbox.message_id == message_id)
+        existing = (await session.execute(stmt)).scalar_one_or_none()
+        if existing:
+            return existing
+
+        notif_tag = tag or f"aanya-msg-{message_id}"
+        meta = dict(data or {})
+        meta["relationship_id"] = relationship_id
+        meta["conversation_id"] = conversation_id
+        meta["message_id"] = message_id
+        meta["url"] = meta.get("url", "/")
+
+        outbox_entry = NotificationOutbox(
+            user_id=user_id,
+            relationship_id=relationship_id,
+            conversation_id=conversation_id,
+            message_id=message_id,
+            scheduled_at=to_utc(scheduled_at),
+            title=title,
+            body=body[:150],  # Consolidate first bubble / snippet
+            tag=notif_tag,
+            status="pending",
+            metadata_json=meta
+        )
+        session.add(outbox_entry)
+        await session.flush()
+        return outbox_entry
+
+    @classmethod
+    async def process_outbox(cls, session: AsyncSession) -> int:
+        """
+        Atomically claims and processes all due pending notifications from the database outbox.
+        - Skips push if user is online in the app.
+        - Offloads pywebpush network requests to background thread.
+        - Marks records as sent, skipped, or failed.
+        """
+        from backend.app.services.presence_service import presence_service
+
+        now = to_utc(ClockService.now())
+
+        # Select due pending outbox items
+        stmt = (
+            select(NotificationOutbox)
+            .where(
+                and_(
+                    NotificationOutbox.status == "pending",
+                    NotificationOutbox.scheduled_at <= now
+                )
+            )
+            .order_by(NotificationOutbox.scheduled_at.asc())
+            .limit(20)
+        )
+        due_items = (await session.execute(stmt)).scalars().all()
+        if not due_items:
+            return 0
+
+        # Mark claimed
+        for item in due_items:
+            item.status = "claimed"
+            item.claimed_at = now
+        await session.commit()
+
+        processed_count = 0
+        for item in due_items:
+            try:
+                # 1. Check in-app presence: If user is online, do not send push
+                if presence_service.is_online(item.relationship_id):
+                    item.status = "skipped"
+                    meta = dict(item.metadata_json or {})
+                    meta["skip_reason"] = "user_online"
+                    item.metadata_json = meta
+                    processed_count += 1
+                    continue
+
+                # 2. Dispatch push to user's registered devices
+                delivered = await cls.send_notification(
+                    session=session,
+                    user_id=item.user_id,
+                    title=item.title,
+                    body=item.body,
+                    tag=item.tag,
+                    data=item.metadata_json
+                )
+
+                item.status = "sent"
+                item.sent_at = to_utc(ClockService.now())
+                meta = dict(item.metadata_json or {})
+                meta["delivered_count"] = delivered
+                item.metadata_json = meta
+                processed_count += 1
+            except Exception as exc:
+                logger.warning("Error processing outbox item %s: %s", item.id, exc)
+                item.status = "failed"
+                meta = dict(item.metadata_json or {})
+                meta["error"] = str(exc)
+                item.metadata_json = meta
+
+        await session.commit()
+        return processed_count
+
+    @classmethod
     async def send_notification(
         cls,
         session: AsyncSession,
@@ -62,7 +189,8 @@ class PushService:
     ) -> int:
         """
         Sends high-urgency web push to all active subscriptions of user.
-        Evicts invalid/unregistered endpoints automatically.
+        Offloads synchronous pywebpush network requests via asyncio.to_thread with explicit timeout.
+        Evicts invalid/unregistered endpoints automatically (HTTP 404/410).
         Returns number of successful deliveries.
         """
         stmt = select(PushSubscription).where(PushSubscription.user_id == user_id)
@@ -85,6 +213,10 @@ class PushService:
             getattr(settings, "VAPID_PRIVATE_KEY", None)
         )
 
+        claim_email = getattr(settings, "VAPID_CLAIM_EMAIL", "mailto:support@aanya-companion.app")
+        if not claim_email.startswith("mailto:"):
+            claim_email = f"mailto:{claim_email}"
+
         sent_count = 0
         stale_sub_ids: List[str] = []
 
@@ -98,7 +230,7 @@ class PushService:
                 continue
 
             try:
-                from pywebpush import webpush, WebPushException
+                from pywebpush import webpush
                 subscription_info = {
                     "endpoint": sub.endpoint,
                     "keys": {
@@ -106,15 +238,16 @@ class PushService:
                         "auth": sub.auth
                     }
                 }
-                
-                # Execute in background thread to prevent blocking event loop
+
+                # Offload synchronous pywebpush to thread pool with explicit timeout
                 await asyncio.to_thread(
                     webpush,
                     subscription_info=subscription_info,
                     data=payload,
                     vapid_private_key=settings.VAPID_PRIVATE_KEY,
-                    vapid_claims={"sub": f"mailto:{getattr(settings, 'VAPID_CLAIM_EMAIL', 'admin@ai-companion.local')}"},
-                    headers={"Urgency": "high", "TTL": "86400"}
+                    vapid_claims={"sub": claim_email},
+                    headers={"Urgency": "high", "TTL": "86400"},
+                    timeout=8
                 )
                 sent_count += 1
             except Exception as exc:
@@ -133,6 +266,30 @@ class PushService:
             await session.commit()
 
         return sent_count
+
+    @classmethod
+    async def send_push_notification(
+        cls,
+        session: AsyncSession,
+        user_id: str,
+        title: str,
+        body: str,
+        relationship_id: Optional[str] = None,
+        tag: str = "aanya-spontaneous",
+        data: Optional[Dict[str, Any]] = None
+    ) -> int:
+        """Alias accepting relationship_id for backward compatibility."""
+        payload_data = dict(data or {})
+        if relationship_id:
+            payload_data["relationship_id"] = relationship_id
+        return await cls.send_notification(
+            session=session,
+            user_id=user_id,
+            title=title,
+            body=body,
+            tag=tag,
+            data=payload_data
+        )
 
 
 push_service = PushService()

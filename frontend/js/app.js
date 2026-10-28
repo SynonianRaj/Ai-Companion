@@ -1,4 +1,4 @@
-import { api } from "./api.js?v=9.3";
+import { api } from "./api.js?v=9.4";
 
 // Check if running directly as local file
 if (window.location.protocol === "file:") {
@@ -16,13 +16,16 @@ const state = {
   burstDebounceTimer: null,
   burstMaxTimeout: null,
   pendingDeliveryTimer: null,
-  activeChunkTimeouts: []
+  activeChunkTimeouts: [],
+  renderedMsgIds: new Set(),
+  pendingChunkIds: new Set(),
+  lastRenderedDateKey: null
 };
 
 // Register Service Worker
 if ("serviceWorker" in navigator && window.location.protocol.startsWith("http")) {
   window.addEventListener("load", () => {
-    navigator.serviceWorker.register("./public/sw.js?v=10.0").catch((err) => {
+    navigator.serviceWorker.register("./public/sw.js?v=11.0").catch((err) => {
       console.log("ServiceWorker registration failed: ", err);
     });
   });
@@ -224,6 +227,68 @@ document.getElementById("onboarding-form").addEventListener("submit", async (e) 
   }
 });
 
+// Canonical Date Key: YYYY-MM-DD
+function getLocalDateKey(dateInput) {
+  const d = new Date(dateInput || Date.now());
+  if (isNaN(d.getTime())) return "";
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+// WhatsApp Relative Date Label: Today, Yesterday, or D MMMM YYYY
+function getRelativeDateLabel(dateKey) {
+  if (!dateKey) return "Today";
+  const now = new Date();
+  const todayKey = getLocalDateKey(now);
+  const yesterday = new Date(now.getTime() - 86400000);
+  const yesterdayKey = getLocalDateKey(yesterday);
+
+  if (dateKey === todayKey) return "Today";
+  if (dateKey === yesterdayKey) return "Yesterday";
+
+  const parts = dateKey.split("-");
+  if (parts.length === 3) {
+    const y = parseInt(parts[0], 10);
+    const m = parseInt(parts[1], 10);
+    const d = parseInt(parts[2], 10);
+    const dateObj = new Date(y, m - 1, d);
+    const options = { day: "numeric", month: "long" };
+    if (y !== now.getFullYear()) {
+      options.year = "numeric";
+    }
+    return dateObj.toLocaleDateString(undefined, options);
+  }
+  return dateKey;
+}
+
+// Render Date Separator Bubble into Chat Feed
+function renderDateSeparatorIfNeeded(dateInput) {
+  const dateKey = getLocalDateKey(dateInput);
+  if (!dateKey) return;
+  if (dateKey !== state.lastRenderedDateKey) {
+    const sep = document.createElement("div");
+    sep.className = "chat-date-separator";
+    sep.setAttribute("data-date-key", dateKey);
+    sep.innerHTML = `<span class="chat-date-bubble">${getRelativeDateLabel(dateKey)}</span>`;
+    chatFeed.appendChild(sep);
+    state.lastRenderedDateKey = dateKey;
+  }
+}
+
+// Relative Message Time: Under 1m -> "Just now", else 12-hour formatted time (e.g. 12:47 AM)
+function formatMessageTime(timestamp) {
+  if (!timestamp) return "Just now";
+  const d = new Date(timestamp);
+  if (isNaN(d.getTime())) return "Just now";
+  const diffMs = Date.now() - d.getTime();
+  if (diffMs < 60000 && diffMs >= -5000) {
+    return "Just now";
+  }
+  return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit", hour12: true });
+}
+
 // Load Chat History
 async function loadChatHistory() {
   clearActiveChunkTimeouts();
@@ -237,17 +302,32 @@ async function loadChatHistory() {
     const messages = res.messages || (Array.isArray(res) ? res : []);
 
     chatFeed.innerHTML = "";
+    state.renderedMsgIds.clear();
+    state.pendingChunkIds.clear();
+    state.lastRenderedDateKey = null;
 
     if (messages.length === 0) {
       // Opening Turn: trigger grounded stranger opener
       appendInitialIcebreaker();
       knownMessageCount = 0;
     } else {
+      // Canonical chronological sort: deliver_at (or created_at), tie-broken by sequence_order, then id
+      messages.sort((a, b) => {
+        const timeA = new Date(a.deliver_at || a.created_at).getTime();
+        const timeB = new Date(b.deliver_at || b.created_at).getTime();
+        if (timeA !== timeB) return timeA - timeB;
+        if ((a.sequence_order || 0) !== (b.sequence_order || 0)) {
+          return (a.sequence_order || 0) - (b.sequence_order || 0);
+        }
+        return (a.id || "").localeCompare(b.id || "");
+      });
+
       let lastRole = null;
       messages.forEach((msg) => {
         const isFollowup = (msg.role === lastRole);
         appendMessageElement(msg.role, msg.content, {
-          timestamp: msg.created_at,
+          id: msg.id,
+          timestamp: msg.deliver_at || msg.created_at,
           seenAt: msg.seen_at,
           status: msg.status,
           isFollowup
@@ -310,19 +390,41 @@ function appendInitialIcebreaker() {
     chunks.push("Pehle yeh batao, which city are you texting from? Tell me a bit about yourself!");
   }
 
+  const nowIso = new Date().toISOString();
   chunks.forEach((c, idx) => {
-    appendMessageElement("assistant", c, { isFollowup: idx > 0 });
+    appendMessageElement("assistant", c, {
+      id: `icebreaker_${idx}`,
+      timestamp: nowIso,
+      isFollowup: idx > 0
+    });
   });
 }
 
 // Append Message to Feed
 function appendMessageElement(role, content, options = {}) {
-  const { timestamp, seenAt, isFollowup, status } = options;
+  const { id, clientMsgId, timestamp, seenAt, isFollowup, status } = options;
+
+  // Deduplication guard: Never append a duplicate message with the same database ID
+  if (id && state.renderedMsgIds.has(id)) {
+    const existing = document.querySelector(`[data-msg-id="${id}"]`);
+    if (existing) return existing;
+  }
+
+  // Ensure WhatsApp-style date separator is rendered if calendar day changed
+  const msgTimestamp = timestamp || new Date().toISOString();
+  renderDateSeparatorIfNeeded(msgTimestamp);
 
   const wrapper = document.createElement("div");
   wrapper.className = `message-wrapper ${role}`;
   if (isFollowup) {
     wrapper.classList.add("grouped-followup");
+  }
+  if (id) {
+    wrapper.setAttribute("data-msg-id", id);
+    state.renderedMsgIds.add(id);
+  }
+  if (clientMsgId) {
+    wrapper.setAttribute("data-client-id", clientMsgId);
   }
 
   const bubble = document.createElement("div");
@@ -332,8 +434,8 @@ function appendMessageElement(role, content, options = {}) {
 
   const meta = document.createElement("div");
   meta.className = "message-meta";
-  const timeStr = timestamp ? new Date(timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "Just now";
-  
+  const timeStr = formatMessageTime(msgTimestamp);
+
   let receiptHtml = "";
   if (role === "user") {
     // Receipts: ✓ (Sent), ✓✓ (Delivered), ✓✓ blue (Seen)
@@ -346,7 +448,7 @@ function appendMessageElement(role, content, options = {}) {
     }
   }
 
-  meta.innerHTML = `<span>${timeStr}</span>${receiptHtml}`;
+  meta.innerHTML = `<span class="message-time" data-timestamp="${msgTimestamp}">${timeStr}</span>${receiptHtml}`;
 
   if (role === "assistant") {
     const reportBtn = document.createElement("button");
@@ -359,6 +461,9 @@ function appendMessageElement(role, content, options = {}) {
   wrapper.appendChild(meta);
   chatFeed.appendChild(wrapper);
   chatFeed.scrollTop = chatFeed.scrollHeight;
+
+  return wrapper;
+}
 
   return wrapper;
 }
@@ -463,12 +568,15 @@ function handleUserMessageInput() {
 
   // Render user bubble immediately with Sent status (✓)
   const isFollowup = state.userBurstQueue.length > 0;
+  const nowIso = new Date().toISOString();
+  const clientMsgId = "msg_" + Date.now() + "_" + Math.random().toString(36).substring(2, 8);
   const wrapperEl = appendMessageElement("user", text, {
+    clientMsgId,
+    timestamp: nowIso,
     status: "sent",
     isFollowup
   });
 
-  const clientMsgId = "msg_" + Date.now() + "_" + Math.random().toString(36).substring(2, 8);
   state.userBurstQueue.push({
     text,
     element: wrapperEl,
@@ -560,8 +668,15 @@ async function flushUserBurst() {
       hideSkipWaitButton();
     }
 
+    // Register pending chunk IDs to avoid polling collisions
+    const chunks = res.chunk_details || [];
+    chunks.forEach(c => {
+      if (c.id) state.pendingChunkIds.add(c.id);
+    });
+    knownMessageCount += currentBurst.length + chunks.length;
+
     // Schedule progressive chunk rendering strictly from deliver_at
-    scheduleChunkDeliveries(res.chunk_details || [], currentBurst);
+    scheduleChunkDeliveries(chunks, currentBurst);
 
     refreshRelationshipStatus();
   } catch (err) {
@@ -609,15 +724,21 @@ function scheduleChunkDeliveries(chunkDetails, userBurst) {
     // Schedule chunk bubble delivery
     const tDeliver = setTimeout(() => {
       removeTypingIndicator();
-      appendMessageElement("assistant", chunk.content, {
-        timestamp: chunk.deliver_at,
-        isFollowup: idx > 0
-      });
+      if (chunk.id) {
+        state.pendingChunkIds.delete(chunk.id);
+      }
+      // Deduplication safeguard: if already rendered by loadChatHistory/polling, skip duplicate append!
+      if (!chunk.id || !state.renderedMsgIds.has(chunk.id)) {
+        appendMessageElement("assistant", chunk.content, {
+          id: chunk.id,
+          timestamp: chunk.deliver_at,
+          isFollowup: idx > 0
+        });
+      }
 
       if (idx === uniqueChunks.length - 1) {
         hideSkipWaitButton();
         applyPersonaPresence({ is_online: true, status_text: "online", subtitle: "online" });
-        maybePromptPushPermission();
       }
     }, waitMs);
     state.activeChunkTimeouts.push(tDeliver);
@@ -660,6 +781,7 @@ settingsBtn.addEventListener("click", async () => {
   }
   settingsModal.style.display = "flex";
   loadSettingsView();
+  refreshNotificationSettingsUI();
 });
 
 document.getElementById("close-settings-btn").addEventListener("click", () => {
@@ -774,36 +896,81 @@ document.getElementById("reset-clock-btn").addEventListener("click", async () =>
   refreshRelationshipStatus();
 });
 
-// Push Notification Permission Helpers
-const pushPermissionBanner = document.getElementById("push-permission-banner");
-const enablePushBtn = document.getElementById("enable-push-btn");
-const dismissPushBtn = document.getElementById("dismiss-push-btn");
+// Settings Modal Push Notification Handlers
+const pushStatusBadge = document.getElementById("push-status-badge");
+const settingsEnablePushBtn = document.getElementById("settings-enable-push-btn");
+const settingsTestPushBtn = document.getElementById("settings-test-push-btn");
+const settingsPushFeedback = document.getElementById("settings-push-feedback");
 
-function maybePromptPushPermission() {
-  if (!("Notification" in window)) return;
-  if (Notification.permission === "default" && !localStorage.getItem("aanya_push_prompt_dismissed")) {
-    if (pushPermissionBanner) pushPermissionBanner.style.display = "flex";
+function refreshNotificationSettingsUI() {
+  if (!("Notification" in window)) {
+    if (pushStatusBadge) {
+      pushStatusBadge.textContent = "Not Supported";
+      pushStatusBadge.className = "badge-status badge-gray";
+    }
+    if (settingsEnablePushBtn) settingsEnablePushBtn.style.display = "none";
+    if (settingsTestPushBtn) settingsTestPushBtn.style.display = "none";
+    return;
+  }
+
+  const perm = Notification.permission;
+  if (perm === "granted") {
+    if (pushStatusBadge) {
+      pushStatusBadge.textContent = "Enabled";
+      pushStatusBadge.className = "badge-status badge-green";
+    }
+    if (settingsEnablePushBtn) settingsEnablePushBtn.style.display = "none";
+    if (settingsTestPushBtn) settingsTestPushBtn.style.display = "inline-flex";
+  } else if (perm === "denied") {
+    if (pushStatusBadge) {
+      pushStatusBadge.textContent = "Blocked";
+      pushStatusBadge.className = "badge-status badge-red";
+    }
+    if (settingsEnablePushBtn) settingsEnablePushBtn.style.display = "none";
+    if (settingsTestPushBtn) settingsTestPushBtn.style.display = "none";
+    if (settingsPushFeedback) settingsPushFeedback.textContent = "Notifications are blocked in your browser site settings.";
+  } else {
+    // default
+    if (pushStatusBadge) {
+      pushStatusBadge.textContent = "Not Enabled";
+      pushStatusBadge.className = "badge-status badge-gray";
+    }
+    if (settingsEnablePushBtn) settingsEnablePushBtn.style.display = "inline-flex";
+    if (settingsTestPushBtn) settingsTestPushBtn.style.display = "none";
   }
 }
 
-if (enablePushBtn) {
-  enablePushBtn.addEventListener("click", async () => {
-    if (pushPermissionBanner) pushPermissionBanner.style.display = "none";
+if (settingsEnablePushBtn) {
+  settingsEnablePushBtn.addEventListener("click", async () => {
+    if (settingsPushFeedback) settingsPushFeedback.textContent = "Requesting permission...";
     try {
       const perm = await Notification.requestPermission();
       if (perm === "granted") {
         await subscribeToWebPush();
+        refreshNotificationSettingsUI();
+        if (settingsPushFeedback) settingsPushFeedback.textContent = "Push notifications enabled successfully!";
+      } else if (perm === "denied") {
+        refreshNotificationSettingsUI();
+        if (settingsPushFeedback) settingsPushFeedback.textContent = "Notifications were blocked in browser settings.";
+      } else {
+        refreshNotificationSettingsUI();
       }
     } catch (e) {
-      console.warn("Notification request permission failed:", e);
+      if (settingsPushFeedback) settingsPushFeedback.textContent = `Error: ${e.message}`;
     }
   });
 }
 
-if (dismissPushBtn) {
-  dismissPushBtn.addEventListener("click", () => {
-    if (pushPermissionBanner) pushPermissionBanner.style.display = "none";
-    localStorage.setItem("aanya_push_prompt_dismissed", "1");
+if (settingsTestPushBtn) {
+  settingsTestPushBtn.addEventListener("click", async () => {
+    if (!state.relationship || !state.relationship.id) return;
+    if (settingsPushFeedback) settingsPushFeedback.textContent = "Dispatching test push...";
+    try {
+      const res = await api.testPush(state.relationship.id);
+      if (settingsPushFeedback) settingsPushFeedback.textContent = res.message || "Test push sent!";
+    } catch (e) {
+      if (settingsPushFeedback) settingsPushFeedback.textContent = `Test push failed: ${e.message}`;
+    }
   });
 }
 
@@ -863,22 +1030,34 @@ async function checkForNewMessages() {
   try {
     const res = await api.getHistory(state.relationship.id);
     const msgs = res.messages || (Array.isArray(res) ? res : []);
-    if (knownMessageCount > 0 && msgs.length > knownMessageCount) {
-      const newMsgs = msgs.slice(knownMessageCount);
-      knownMessageCount = msgs.length;
-      newMsgs.forEach(m => {
+
+    // Filter out messages already rendered in DOM or pending in active chunk delivery
+    const unrenderedMsgs = msgs.filter(m =>
+      !state.renderedMsgIds.has(m.id) && !state.pendingChunkIds.has(m.id)
+    );
+
+    if (unrenderedMsgs.length > 0) {
+      unrenderedMsgs.forEach(m => {
         if (m.role === "assistant") {
           showTypingIndicator();
           setTimeout(() => {
             removeTypingIndicator();
-            appendMessageElement("assistant", m.content, { timestamp: m.created_at });
+            appendMessageElement("assistant", m.content, {
+              id: m.id,
+              timestamp: m.deliver_at || m.created_at
+            });
             updatePersonaStatus("Online");
-          }, 1200);
+          }, 800);
+        } else if (m.role === "user") {
+          appendMessageElement("user", m.content, {
+            id: m.id,
+            timestamp: m.deliver_at || m.created_at,
+            status: m.status
+          });
         }
       });
-    } else {
-      knownMessageCount = msgs.length;
     }
+    knownMessageCount = msgs.length;
   } catch (e) {
     // Non-critical background check
   }
@@ -890,6 +1069,34 @@ setInterval(() => {
     checkForNewMessages();
   }
 }, 4000);
+
+// 15-second timer for relative timestamps ("Just now" -> exact time) and midnight transitions
+setInterval(() => {
+  // 1. Upgrade "Just now" to exact time once 60s has passed
+  const timeSpans = document.querySelectorAll(".message-time[data-timestamp]");
+  timeSpans.forEach(span => {
+    const ts = span.getAttribute("data-timestamp");
+    if (ts) {
+      const formatted = formatMessageTime(ts);
+      if (span.textContent !== formatted) {
+        span.textContent = formatted;
+      }
+    }
+  });
+
+  // 2. Midnight transition for date separators
+  const dateSeparators = document.querySelectorAll(".chat-date-separator[data-date-key]");
+  dateSeparators.forEach(sep => {
+    const dateKey = sep.getAttribute("data-date-key");
+    const bubble = sep.querySelector(".chat-date-bubble");
+    if (dateKey && bubble) {
+      const currentLabel = getRelativeDateLabel(dateKey);
+      if (bubble.textContent !== currentLabel) {
+        bubble.textContent = currentLabel;
+      }
+    }
+  });
+}, 15000);
 
 // Start App
 init();

@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List
 from sqlalchemy import (
-    String, Boolean, DateTime, Float, Integer, ForeignKey, Text, JSON
+    String, Boolean, DateTime, Float, Integer, ForeignKey, Text, JSON, UniqueConstraint
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship as sa_relationship
 from backend.app.db.base import Base
@@ -232,6 +232,34 @@ class PushSubscription(Base):
     p256dh: Mapped[str] = mapped_column(String(255))
     auth: Mapped[str] = mapped_column(String(255))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class NotificationOutbox(Base):
+    """
+    Persistent outbox for scheduled notifications.
+    Survives dyno spin-downs, server restarts, and worker restarts.
+    Guarantees exactly-once processing per message.
+    """
+    __tablename__ = "notification_outbox"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), index=True)
+    relationship_id: Mapped[str] = mapped_column(String(36), ForeignKey("relationship_state.id"), index=True)
+    conversation_id: Mapped[str] = mapped_column(String(36), ForeignKey("conversations.id"), index=True)
+    message_id: Mapped[str] = mapped_column(String(36), ForeignKey("messages.id"), index=True)
+    scheduled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    status: Mapped[str] = mapped_column(String(20), default="pending", index=True)  # pending, claimed, sent, skipped, failed
+    claimed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    title: Mapped[str] = mapped_column(String(255))
+    body: Mapped[str] = mapped_column(Text)
+    tag: Mapped[str] = mapped_column(String(100))
+    metadata_json: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("message_id", name="uq_notification_outbox_message"),
+    )
 
 
 class PersonaDailyNote(Base):

@@ -87,7 +87,7 @@ class Settings(BaseSettings):
     # Web Push (VAPID)
     VAPID_PUBLIC_KEY: Union[str, None] = None
     VAPID_PRIVATE_KEY: Union[str, None] = None
-    VAPID_CLAIM_EMAIL: str = "admin@ai-companion.local"
+    VAPID_CLAIM_EMAIL: str = "mailto:support@aanya-companion.app"
 
     model_config = SettingsConfigDict(
         env_file=".env",

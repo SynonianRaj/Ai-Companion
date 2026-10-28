@@ -1,4 +1,4 @@
-const CACHE_NAME = "aanya-companion-v10-shell";
+const CACHE_NAME = "aanya-companion-v11-shell";
 const ASSETS_TO_CACHE = [
   "/",
   "/index.html",
@@ -76,22 +76,36 @@ self.addEventListener("push", (event) => {
   }
 
   const title = data.title || "Aanya";
+  const msgId = (data.data && data.data.message_id) || (data.tag ? data.tag : "latest");
   const options = {
     body: data.body || "Aanya sent you a message",
     icon: data.icon || "/icons/icon-192.png",
     badge: data.badge || "/icons/icon-192.png",
-    tag: data.tag || "aanya-attention-msg",
-    renotify: true,
+    tag: data.tag || `aanya-msg-${msgId}`,
+    renotify: false,
+    vibrate: [200, 100, 200],
     data: data.data || { url: "/" }
   };
 
   event.waitUntil(self.registration.showNotification(title, options));
 });
 
-// Notification Click Handler: Focus or open chat
+// Notification Click Handler: Focus or open chat safely
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
-  const targetUrl = (event.notification.data && event.notification.data.url) || "/";
+
+  // Validate target URL against same origin to prevent open-redirect vulnerabilities
+  let targetPath = "/";
+  if (event.notification.data && event.notification.data.url) {
+    try {
+      const parsed = new URL(event.notification.data.url, self.location.origin);
+      if (parsed.origin === self.location.origin) {
+        targetPath = parsed.pathname + parsed.search;
+      }
+    } catch (e) {
+      targetPath = "/";
+    }
+  }
 
   event.waitUntil(
     clients.matchAll({ type: "window", includeUncontrolled: true }).then((clientList) => {
@@ -101,7 +115,7 @@ self.addEventListener("notificationclick", (event) => {
         }
       }
       if (clients.openWindow) {
-        return clients.openWindow(targetUrl);
+        return clients.openWindow(targetPath);
       }
     })
   );

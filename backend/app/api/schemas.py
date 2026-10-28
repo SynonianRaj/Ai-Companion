@@ -36,6 +36,7 @@ class SkipWaitRequest(BaseModel):
 
 
 class AssistantChunkDetail(BaseModel):
+    id: Optional[str] = None
     content: str
     deliver_at: datetime
     typing_duration_seconds: float
@@ -126,6 +127,10 @@ class PushSubscribeRequest(BaseModel):
     endpoint: str
     p256dh: str
     auth: str
+
+
+class PushTestRequest(BaseModel):
+    relationship_id: str
 
 
 class TickResponse(BaseModel):

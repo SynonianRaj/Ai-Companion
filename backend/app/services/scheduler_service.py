@@ -462,6 +462,12 @@ class SchedulerService:
         tick_results: List[Dict[str, Any]] = []
 
         async def _do_heartbeat(s: AsyncSession):
+            # Process any due database outbox notifications (restart / dyno resilience)
+            try:
+                await push_service.process_outbox(s)
+            except Exception as e:
+                logger.warning("Error processing outbox in heartbeat: %s", e)
+
             stmt = (
                 select(RelationshipState)
                 .where(

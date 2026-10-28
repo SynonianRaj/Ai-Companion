@@ -24,7 +24,7 @@ from backend.app.api.schemas import (
     RegisterRequest, RegisterResponse, SendMessageRequest, SendMessageResponse,
     MessageHistoryItem, ChatHistoryResponse, SkipWaitRequest, MemoryItem, UserReportRequest,
     RelationshipSettingsResponse, RelationshipSettingsUpdateRequest,
-    DevClockAdvanceRequest, PushSubscribeRequest, TickResponse, PersonaPresence
+    DevClockAdvanceRequest, PushSubscribeRequest, PushTestRequest, TickResponse, PersonaPresence
 )
 
 logger = logging.getLogger(__name__)
@@ -286,7 +286,7 @@ async def get_chat_history(
                 Message.deliver_at <= now
             )
         )
-        .order_by(Message.deliver_at.asc(), Message.sequence_order.asc())
+        .order_by(Message.deliver_at.asc(), Message.sequence_order.asc(), Message.id.asc())
     )
     messages = (await session.execute(stmt)).scalars().all()
 
@@ -300,7 +300,7 @@ async def get_chat_history(
                 Message.deliver_at > now
             )
         )
-        .order_by(Message.deliver_at.asc(), Message.sequence_order.asc())
+        .order_by(Message.deliver_at.asc(), Message.sequence_order.asc(), Message.id.asc())
     )
     pending_messages = (await session.execute(pending_stmt)).scalars().all()
 
@@ -583,6 +583,34 @@ async def subscribe_push_notifications(
     return {"status": "subscribed", "subscription_id": sub.id}
 
 
+@router.post("/push/test")
+async def trigger_test_push(
+    req: PushTestRequest,
+    session: AsyncSession = Depends(get_db)
+):
+    """
+    Authenticated test push endpoint.
+    Verifies that the relationship exists and is active, and dispatches a test Web Push notification.
+    """
+    rel = await session.get(RelationshipState, req.relationship_id)
+    if not rel or rel.lifecycle_status == "deleted":
+        raise HTTPException(status_code=404, detail="Active relationship not found")
+
+    delivered = await push_service.send_notification(
+        session=session,
+        user_id=rel.user_id,
+        title="Aanya",
+        body="Hey! Notifications are working perfectly ✨",
+        tag="aanya-test-push",
+        data={"url": "/", "relationship_id": rel.id}
+    )
+    return {
+        "status": "ok",
+        "delivered_count": delivered,
+        "message": "Test notification dispatched" if delivered > 0 else "No active push subscription registered on this device"
+    }
+
+
 @router.api_route("/internal/database/reset", methods=["POST"])
 async def internal_database_reset(
     request: Request,
@@ -610,6 +638,7 @@ async def internal_database_reset(
         "safety_events",
         "user_reports",
         "push_subscriptions",
+        "notification_outbox",
         "subscription_entitlements",
         "user_rate_limits",
         "pending_questions",
