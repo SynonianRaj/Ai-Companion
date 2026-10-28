@@ -612,9 +612,12 @@ async def internal_database_reset(
         "push_subscriptions",
         "subscription_entitlements",
         "user_rate_limits",
+        "pending_questions",
+        "anti_guilt_audit_logs",
+        "persona_storylines",
+        "persona_daily_notes",
         "relationship_state",
-        "users",
-        "persona_daily_notes"
+        "users"
     ]
 
     is_sqlite = engine.url.drivername.startswith("sqlite")
