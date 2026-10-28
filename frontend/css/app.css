@@ -91,8 +91,20 @@ html, body {
   width: 10px;
   height: 10px;
   border-radius: 50%;
-  background-color: var(--success);
   border: 2px solid var(--bg-secondary);
+  display: none;
+  transition: background-color 0.2s ease;
+}
+
+.avatar .status-dot.online {
+  display: block;
+  background-color: var(--success);
+}
+
+.avatar .status-dot.offline,
+.avatar .status-dot.sleeping,
+.avatar .status-dot.busy {
+  display: none;
 }
 
 .header-text h1 {

@@ -120,7 +120,6 @@ async function init() {
   try {
     state.persona = await api.getPersona();
     document.getElementById("persona-name").textContent = state.persona.name;
-    updatePersonaStatus("Online");
   } catch (e) {
     console.error("Failed to load persona:", e);
   }
@@ -152,13 +151,36 @@ function resetSessionToOnboarding(noticeMessage = null) {
   showOnboarding();
 }
 
-function updatePersonaStatus(status, isTyping = false) {
-  if (personaStatusText) {
-    personaStatusText.textContent = status;
-    if (isTyping) {
-      personaStatusText.classList.add("typing");
+const statusDot = document.querySelector(".avatar .status-dot");
+const personaBio = document.getElementById("persona-bio");
+
+function applyPersonaPresence(presence) {
+  if (!presence) return;
+  const statusLabel = presence.status_text || "online";
+  const cityLabel = presence.city_label || "Indiranagar, Bengaluru";
+
+  const statusSpan = document.getElementById("persona-status-text");
+  if (statusSpan) {
+    statusSpan.textContent = statusLabel;
+  }
+
+  if (statusDot) {
+    if (presence.is_online) {
+      statusDot.className = "status-dot online";
     } else {
-      personaStatusText.classList.remove("typing");
+      statusDot.className = "status-dot offline";
+    }
+  }
+}
+
+function updatePersonaStatus(status, isTyping = false) {
+  const statusSpan = document.getElementById("persona-status-text");
+  if (statusSpan) {
+    statusSpan.textContent = status;
+    if (isTyping) {
+      statusSpan.classList.add("typing");
+    } else {
+      statusSpan.classList.remove("typing");
     }
   }
 }
@@ -235,7 +257,9 @@ async function loadChatHistory() {
       knownMessageCount = messages.length;
     }
 
-    if (res.persona_activity) {
+    if (res.presence) {
+      applyPersonaPresence(res.presence);
+    } else if (res.persona_activity) {
       updatePersonaStatus(res.persona_activity);
     }
 
@@ -247,7 +271,16 @@ async function loadChatHistory() {
       } else {
         hideSkipWaitButton();
       }
-      showTypingIndicator();
+      // Typing indicator only when delivery is imminent (<= 2500ms)
+      if (waitMs <= 2500) {
+        showTypingIndicator();
+      } else {
+        removeTypingIndicator();
+        const tTyping = setTimeout(() => {
+          showTypingIndicator();
+        }, Math.max(0, waitMs - 2000));
+        state.activeChunkTimeouts.push(tTyping);
+      }
       state.pendingDeliveryTimer = setTimeout(() => {
         removeTypingIndicator();
         loadChatHistory();
@@ -497,7 +530,9 @@ async function flushUserBurst() {
       return;
     }
 
-    if (res.persona_activity) {
+    if (res.presence) {
+      applyPersonaPresence(res.presence);
+    } else if (res.persona_activity) {
       updatePersonaStatus(res.persona_activity);
     }
 
@@ -511,7 +546,11 @@ async function flushUserBurst() {
           tick.classList.add("seen");
         }
       });
-      updatePersonaStatus("Online");
+      // If response presence indicates online, keep online
+      if (res.presence && res.presence.is_online) {
+        updatePersonaStatus("online");
+        if (statusDot) statusDot.className = "status-dot online";
+      }
     }, seenDelay);
 
     // Show Skip Wait button only if backend authoritatively signals it
@@ -577,7 +616,7 @@ function scheduleChunkDeliveries(chunkDetails, userBurst) {
 
       if (idx === uniqueChunks.length - 1) {
         hideSkipWaitButton();
-        updatePersonaStatus("Online");
+        applyPersonaPresence({ is_online: true, status_text: "online", subtitle: "online" });
         maybePromptPushPermission();
       }
     }, waitMs);

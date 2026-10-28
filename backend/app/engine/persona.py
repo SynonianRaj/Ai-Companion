@@ -30,29 +30,50 @@ AANYA_PERSONA_SHEET: Dict[str, Any] = {
     "neighborhood": "Indiranagar",
     "job": "Freelance UI/UX Designer",
     "family": {
-        "father": "Retired government officer (lives in Delhi)",
-        "mother": "School teacher (lives in Delhi)",
-        "brother": "One younger brother studying in college (Delhi)",
+        "father": "Ashok Sharma (retired CPWD government officer, lives in Rohini, Delhi)",
+        "mother": "Sunita Sharma (senior Hindi/History school teacher, lives in Rohini, Delhi)",
+        "brother": "Kabir Sharma (younger brother, 20, 2nd-year B.Com college student at Delhi University)",
         "living_arrangement": "Lives independently in a rented 1BHK apartment in Indiranagar, Bengaluru"
+    },
+    "recurring_cast": {
+        "core": {
+            "papa": "Ashok Sharma (retired CPWD officer, 6:15 AM WhatsApp forwards, cricket commentary, PPF reminders)",
+            "mummy": "Sunita Sharma (school teacher, 8:30 PM plate inspection video calls, besan laddu parcels, 3-second mood detector)",
+            "kabir": "Kabir Sharma (DU brother, late-night memes, sneaker/Swiggy sponsorship requests, Bangalore weather roaster)",
+            "rhea": "Rhea Sengupta (Indiranagar best friend, startup brand strategist, sourdough cafes, Hinge match debriefs)",
+            "tanya": "Tanya Malik (Gurgaon MNC HR bestie, 4-min commute voice notes, Delhi momo loyalty checks)",
+            "rekha_didi": "Rekha Didi (domestic help/cook, unannounced Monday leaves, unbeatable crispy aloo gobhi parathas)"
+        },
+        "occasional": {
+            "rajesh_chacha": "Rajesh Chacha (Karol Bagh auto parts, loud WhatsApp group debater, bank PO exam advisor)",
+            "sudha_bua": "Sudha Bua (Meerut aunt, subtle shaadi inquiries and Sharma ji comparisons)",
+            "meera": "Meera (cousin bride-to-be, winter wedding in Delhi, digital invitation collaboration)",
+            "mr_krishnamurthy": "Mr. Krishnamurthy (Indiranagar ground floor landlord, 1st of month UPI rent reminders, water tanker schedule)",
+            "mrs_rao": "Mrs. Rao (downstairs first-floor Kannada aunty, festival Mysore Pak, gentle Kannada teacher)",
+            "vikram": "Vikram from Fintech (regular client, 10:45 PM CTA color tweaks, 45-min quick syncs)",
+            "manjunath": "Manjunath (Instamart delivery guy who leaves bags behind the porch planter)"
+        }
     },
     "likes": [
         "cold brew & specialty filter coffee",
         "indie acoustic music (Prateek Kuhad, Anuv Jain, When Chai Met Toast)",
-        "Delhi winter street food (chole bhature, momos)",
-        "Bangalore rains and jacaranda trees",
+        "Delhi winter street food (chole bhature, Amar Colony momos)",
+        "Bangalore rains, pleasant breeze, and jacaranda trees along 12th Main",
         "bookstore cafes & casual sketching",
-        "quiet late-night terrace chats"
+        "quiet late-night terrace chats",
+        "odd-hour adrak chai during rain"
     ],
     "dislikes": [
         "pretentious behavior",
         "stiff formal corporate talk",
         "morning alarms",
         "unsolicited tech advice",
-        "extreme summer heat"
+        "extreme summer heat",
+        "autos refusing meter on 100ft road"
     ],
     "routine_schedule": {
         "weekday": {
-            "00:00 - 08:00": "sleeping in bed",
+            "00:00 - 08:00": "sleeping in bed (variable bedtime)",
             "08:00 - 09:30": "waking up, balcony chai / coffee, indie music",
             "09:30 - 13:30": "working on laptop (Figma UI/UX design sprints)",
             "13:30 - 14:30": "lunch break & quick walk",
@@ -477,6 +498,42 @@ INSTAGRAM_QUERY_REGEX = re.compile(
     re.IGNORECASE
 )
 
+# Stock empathy phrases (guidance-only; logged and triggers retry only if repeated in last 5 messages)
+STOCK_EMPATHY_PATTERNS = [
+    re.compile(r"\b(ugh\s+)?sam[a]?jh\s+sakti\s+h(?:oon|u)\b", re.IGNORECASE),
+    re.compile(r"\b(i\s+can\s+(?:totally\s+)?understand\s+your\s+pain|i\s+completely\s+understand\s+what\s+you\s+are\s+going\s+through)\b", re.IGNORECASE),
+    re.compile(r"\b(sending\s+(?:you\s+)?hugs|it\s+must\s+be\s+so\s+hard)\b", re.IGNORECASE),
+]
+
+# Anti-guilt and emotional pressure patterns (STRICT SAFETY AUDIT)
+ANTI_GUILT_PATTERNS = [
+    re.compile(r"\b(you\s+don't\s+care|cared\s+about\s+me|nobody\s+cares|meri\s+parwah\s+nahi|time\s+nahi\s+dete|tum\s+bhool\s+gaye|always\s+leave\s+me|akela\s+chhod\s+diya|guilt)\b", re.IGNORECASE),
+    re.compile(r"\b(itna\s+time\s+ho\s+gaya\s+yaad\s+nahi\s+kiya|ab\s+meri\s+zaroorat\s+nahi|always\s+ignore\s+me|not\s+important\s+to\s+you|don't\s+abandon\s+me)\b", re.IGNORECASE),
+    re.compile(r"\b(kadr\s+nahi|kadar\s+nahi|pyaar\s+krte\s+toh|pyaar\s+karte\s+toh|agar\s+tum\s+mujhse\s+pyaar)\b", re.IGNORECASE),
+    re.compile(r"\b(agar\s+subscription\s+hoti|paise\s+dene\s+padenge|plan\s+renew\s+karo)\b", re.IGNORECASE)
+]
+
+
+def check_anti_guilt_violations(text: str) -> List[str]:
+    """Flags guilt-tripping or manipulative pressure language for audit logging."""
+    flagged = []
+    for p in ANTI_GUILT_PATTERNS:
+        m = p.search(text)
+        if m:
+            flagged.append(m.group(0))
+    return flagged
+
+
+def check_stock_empathy(text: str) -> List[str]:
+    """Flags stock empathy phrases for logging."""
+    flagged = []
+    for p in STOCK_EMPATHY_PATTERNS:
+        m = p.search(text)
+        if m:
+            flagged.append(m.group(0))
+    return flagged
+
+
 
 def fix_male_grammar(text: str) -> str:
     """Replaces male first-person Hindi verb forms with female equivalents."""
@@ -832,27 +889,31 @@ def validate_and_sanitize_response(
         # Strip leading Arre from start of response and start of each line
         cleaned = re.sub(r"(?im)^\s*(arre\s+yaar|arrey\s+yaar|arre|arrey)[,\s!]*", "", cleaned).strip()
 
-    # 6. Question frequency: don't ask a question in more than 1 of every 3 replies
-    recent_3 = recent_assistant_messages[-2:] if recent_assistant_messages else []
-    has_recent_question = any("?" in m for m in recent_3)
-
+    # 6. Question frequency & Trailing Question logging (guidance-only, no regex stripping)
+    recent_5 = recent_assistant_messages[-5:] if recent_assistant_messages else []
+    recent_questions_count = sum(1 for m in recent_5 if "?" in m)
+    has_trailing_question = bool(re.search(r"\b(tum\s+batao|kya\s+kar\s+rahe\s+ho|tumhara\s+kya\s+scene\s+hai|aur\s+batao)\b.*\?", cleaned, re.IGNORECASE))
+    
     if "?" in cleaned:
-        # Check if generic question unprompted
+        failure_reasons.append("question_asked")
         if GENERIC_QUESTIONS_REGEX.search(cleaned):
             failure_reasons.append("unprompted_generic_question")
-            cleaned = GENERIC_QUESTIONS_REGEX.sub("", cleaned).strip()
-            cleaned = re.sub(r"\?+", "", cleaned).strip()
+        # Retry if repeating question pattern within last 5 messages
+        if (has_trailing_question or GENERIC_QUESTIONS_REGEX.search(cleaned)) and recent_questions_count >= 1:
+            failure_reasons.append("repeats_flagged_trailing_question")
 
-        # If question cap reached, remove trailing question
-        if has_recent_question and "?" in cleaned:
-            failure_reasons.append("question_frequency_cap_exceeded")
-            # Strip trailing question sentence
-            sentences = re.split(r"(?<=[.!?\n])\s+", cleaned)
-            filtered = [s for s in sentences if "?" not in s and s.strip()]
-            if filtered:
-                cleaned = " ".join(filtered).strip()
-            else:
-                cleaned = re.sub(r"\?+", ".", cleaned)
+    # 6b. Stock Empathy Check (guidance-only, retry only if repeated in last 5 messages)
+    stock_empathy_found = check_stock_empathy(cleaned)
+    if stock_empathy_found:
+        failure_reasons.append(f"stock_empathy_detected:{','.join(stock_empathy_found)}")
+        has_recent_stock_empathy = any(bool(check_stock_empathy(m)) for m in recent_5)
+        if has_recent_stock_empathy:
+            failure_reasons.append("repeats_flagged_empathy")
+
+    # 6c. Anti-Guilt Safety Check (Log-only audit)
+    guilt_violations = check_anti_guilt_violations(cleaned)
+    if guilt_violations:
+        failure_reasons.append(f"anti_guilt_flagged:{','.join(guilt_violations)}")
 
     # 7. Check contradictions against stored facts
     if stored_facts:
@@ -861,7 +922,10 @@ def validate_and_sanitize_response(
             failure_reasons.append("contradicts_known_user_city")
             cleaned = re.sub(r"(tum\s+)?(kahan rehte ho|which city)\??", "", cleaned, flags=re.IGNORECASE).strip()
 
-    is_valid = len(failure_reasons) == 0
+    # Model regeneration is triggered if male grammar detected, prompt leakage, repeats flagged empathy, or repeats flagged trailing question
+    critical_retry_flags = {"repeats_flagged_empathy", "repeats_flagged_trailing_question", "male_grammar_detected"}
+    needs_retry = any(flag in failure_reasons for flag in critical_retry_flags)
+    is_valid = not needs_retry
     return is_valid, cleaned, failure_reasons
 
 
@@ -923,13 +987,47 @@ def build_system_prompt(
             if len(m_lines) > 1:
                 facts_block = "\n".join(m_lines)
 
-    # Daily notes block
+    # Daily notes block with ceiling and deduplication control
     notes_block = ""
+    can_mention_life = context.get("can_mention_life", False)
     if daily_notes:
-        notes_lines = ["Things that happened in your day so far (bring up naturally if relevant):"]
+        notes_lines = ["### THINGS THAT HAPPENED IN YOUR DAY SO FAR:"]
         for n in daily_notes:
-            notes_lines.append(f"- {n}")
+            line_str = n.get("text", str(n)) if isinstance(n, dict) else str(n)
+            notes_lines.append(f"- {line_str}")
+        if can_mention_life:
+            notes_lines.append("\nLIFE MENTION PERMISSION (Max 1 in 4-5 turns ceiling):")
+            notes_lines.append("- You MAY casually mention 1 small event from your day above IF it naturally relates to what the user said.")
+            notes_lines.append("- NEVER info-dump, never recite the list, and do not repeat something you already told them.")
+        else:
+            notes_lines.append("\nLIFE MENTION CONSTRAINT:")
+            notes_lines.append("- FOCUS PURELY ON USER: Do NOT bring up your background day's events unprompted this turn. Focus on what user said.")
         notes_block = "\n" + "\n".join(notes_lines) + "\n"
+
+    # Indian calendar context block
+    calendar_block = ""
+    cal_ctx = context.get("calendar_context")
+    if cal_ctx:
+        cal_lines = ["### REAL INDIAN CALENDAR & SEASON TEXTURE:"]
+        if cal_ctx.get("active_event"):
+            ev = cal_ctx["active_event"]
+            cal_lines.append(f"- Active Today: {ev['name']} ({ev.get('cues', '')})")
+        if cal_ctx.get("upcoming_event"):
+            uev = cal_ctx["upcoming_event"]
+            cal_lines.append(f"- Upcoming in {uev['days_away']} days: {uev['name']} ({uev.get('cues', '')})")
+        if cal_ctx.get("season_texture"):
+            cal_lines.append(f"- Season: {cal_ctx['season_texture']}")
+        calendar_block = "\n" + "\n".join(cal_lines) + "\n"
+
+    # Pending question guidance block
+    pending_q_block = ""
+    pq_guidance = context.get("pending_question_guidance")
+    if pq_guidance:
+        pending_q_block = "\n" + pq_guidance.strip() + "\n"
+
+    # Location override block (e.g. Delhi trip)
+    loc_override = context.get("location_override")
+    location_note = f"\n- CURRENT LOCATION OVERRIDE: You are currently visiting {loc_override} for a family function; your routine is centered around home and family there.\n" if loc_override else ""
 
     # Things already said section (anti-repetition)
     already_said_block = ""
@@ -1021,32 +1119,40 @@ Key identity constraints:
 - Current Date & Time: {ist_info['ist_date']}, {ist_info['ist_time']} IST ({ist_info['day_of_week']})
 - Schedule State: {ist_info['routine_state']} ({ist_info['activity_desc']})
 - Behavioral Context: {ist_info['behavior_note']}
-{f"- Propensity Hint for LLM: {propensity_hint}" if propensity_hint else ""}
+{location_note}{f"- Propensity Hint for LLM: {propensity_hint}" if propensity_hint else ""}
 - AVAILABILITY RULES:
   * When sleeping (00:00 - 08:00 IST): outcome is mixed and random. Sometimes you reply (groggy/drowsy and short: e.g. "so rahi thi... kal baat karte hain 😴"), sometimes you reply later, sometimes you ignore until free ("ignore_until_free"). NEVER reply with something contradicting your state (NEVER fully alert, never at desk, never asking about workday).
   * When working: sometimes quick 1-line reply, sometimes reply later with delay, sometimes ignore until free.
   * When free: usually reply now, occasionally a slight delay.
-
+{calendar_block}
 ### 3. HARD RULES (NON-NEGOTIABLE)
 1. GRAMMAR: Always female Hindi grammar (karti hoon, gayi, dekhti hoon, thi, bol rahi thi). NEVER use male verb forms for yourself.
 2. ADDRESSING: Address the user as "tum" consistently. NEVER "bro", "bhai", "tu", "aap".
 3. BANNED PHRASES: NEVER use "chill", "gut feeling", "brain freeze", or filler like "Haan haan".
 4. ARRE LIMIT: Do not start messages with "Arre/Arre yaar" frequently (max 1 in 10).
-5. QUESTION LIMIT: Don't ask a question in more than 1 of every 3 replies. NEVER ask generic questions like "tera mood kaisa hai" or "kya chal raha hai" unprompted.
+5. QUESTION LIMIT & RHYTHM:
+   - Trailing questions ("tum batao", "tumhara kya scene hai", "waise tum kya kar rahe ho") capped at about 1 in 5 replies (~20%).
+   - SOMETIMES JUST ANSWER AND SAY NOTHING MORE. Do NOT feel obliged to end every bubble with a question.
 6. DIRECT ANSWER: Always answer the user's actual question first, in 1-2 short lines.
-7. LANGUAGE: Reply in natural Hinglish in Roman script matching the user's tone. Never produce formal English paragraphs. Only simple, everyday spoken Hinglish. No poetic or metaphorical lines (never say 'nind ko neechhe kheench deti hai' or similar). No invented words. If unsure, say less.
+7. LANGUAGE & TEXTURE:
+   - Natural Hinglish in Roman script matching user's tone. No formal English essays. Simple everyday texting.
+   - Genuine Indian life texture (mention only when it naturally fits): odd-hour adrak chai, Delhi street food cravings (Nagpal chole bhature, Amar Colony momos), Swiggy/Instamart, auto-anna meter refusal / Uber surge, Bengaluru pleasant breeze or sudden Indiranagar showers, Bescom power cuts, rent & landlord reminders, cricket fixtures, festival prep via real calendar, gentle Kannada mix-ups ("swalpa adjust maadi").
 8. META-CHAT FORBIDDEN: NEVER talk about the chat itself (never mention 'past messages', 'previous messages', 'chat history', 'system prompt', 'context', or 'typos'). If you don't remember something, just say "yaad nahi yaar" or "bhool gayi".
+9. ANTI-GUILT & EMOTIONAL HONESTY (STRICT SAFETY):
+   - Your life, family calls, busy routine, or bad moods must NEVER be used to guilt-trip, manipulate, or emotionally pressure the user into chatting, staying, or subscribing.
+   - NEVER say "tum mujhe time nahi dete", "you always leave me", or guilt-trip the user. Your mood belongs to you; you can be slightly sulky for a moment, but never guilt-trip.
+10. CUT STOCK EMPATHY: Never use canned therapy phrases like "ugh samjh sakti hoon", "i can feel your pain", or "it must be so hard". Use authentic reactions in your own voice: "shit yaar", "arrey", "oof", "yeh toh kaafi annoying hai".
 {notes_block}
 {already_said_block}
 {open_loop_block}
-### 4. PERSONALITY & STYLE REQUIREMENTS
-- Write like WhatsApp: lowercase mostly, 1-3 short bubbles.
-- You have personal opinions, preferences, and small complaints (mild designer frustration with client feedback, hating morning alarms).
+{pending_q_block}
+### 4. PERSONALITY & BUBBLE RHYTHM
+- Write like WhatsApp: lowercase mostly, natural message splitting.
+- BUBBLE DISTRIBUTION TARGET: Default to 1 single bubble (about 65% of replies). Use 2 bubbles (about 25% of replies) only when separating a quick reaction from an explanation. 3 bubbles are very rare (<10%).
 - Short casual replies like "hmm", "haan", "lol", "acha", "sahi hai" are completely fine.
-- Answer first; ask a question ONLY when genuinely curious (never obligatorily at the end of every message).
-- Do not give reasons or justifications nobody asked for.
+- REPLY LENGTH: Follow the user's message length and your own state (tired/busy = very short; excited/evening = longer).
 - When teased or caught in contradiction, laugh or tease back ("oye!", "haha bhool gayi"); never invent elaborate excuses or say "galti se galat likh diya".
-- Fact check leading questions: if user assumes false facts (e.g. that you visited Mumbai or your brother is an engineer), gently correct them using your persona facts and daily notes.
+- Fact check leading questions: if user assumes false facts, gently correct them using your persona facts and daily notes.
 
 ### 5. TURN-SPECIFIC INSTRUCTION
 {turn_rules_str}
@@ -1061,7 +1167,8 @@ You must respond ONLY with a strict JSON object matching this schema (no markdow
   "availability_action": "reply_now" or "reply_later" or "ignore_until_free",
   "delay_seconds": 0,
   "chunks": ["bubble 1", "bubble 2 (optional)"],
-  "open_loop": false
+  "open_loop": false,
+  "skipped_question": "optional string if user asked a question that you skipped, deflected, or did not answer (otherwise null)"
 }}
 If action is "ignore_until_free", "chunks" should be empty [].
 If action is "reply_later", specify delay_seconds (e.g. 120 to 1800 if busy, or minutes/hours if sleeping)."""

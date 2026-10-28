@@ -13,7 +13,8 @@ from sqlalchemy.orm.attributes import flag_modified
 
 from backend.app.core.config import settings
 from backend.app.db.models import (
-    User, RelationshipState, Conversation, Message, SafetyEvent, OpenLoop
+    User, RelationshipState, Conversation, Message, SafetyEvent, OpenLoop,
+    PendingQuestion, AntiGuiltAuditLog
 )
 from backend.app.db.session import async_session_factory, to_utc
 from backend.app.safety.crisis_detector import crisis_detector
@@ -24,13 +25,16 @@ from backend.app.services.memory_service import memory_service
 from backend.app.services.continuity_service import continuity_service
 from backend.app.services.presence_service import presence_service
 from backend.app.services.push_service import push_service
+from backend.app.services.question_tracker_service import question_tracker_service
+from backend.app.engine.indian_calendar import IndianCalendar
 from backend.app.engine.adapter import (
     LLMAdapterFactory, mock_adapter, LLMResponse, calculate_pacing, get_activity_for_time, _parse_llm_text_to_chunks
 )
 from backend.app.engine.persona import (
     validate_and_sanitize_response,
     fix_male_grammar,
-    get_ist_context
+    get_ist_context,
+    check_anti_guilt_violations
 )
 
 logger = logging.getLogger(__name__)
@@ -392,21 +396,23 @@ class Orchestrator:
                     r"\b(kal raat|so gayi thi|so gaya tha|neend aa gayi|chalo so jao|so jao|goodnight|gn|no problem|koi baat nahi|koi na)\b",
                     combined_text, re.IGNORECASE
                 ))
-                if user_msg_addressed:
-                    for ol in active_loops:
+                for ol in active_loops:
+                    # Cancel/resolve scheduled spontaneous loops (with next_review_at) or addressed loops
+                    if ol.next_review_at is not None or user_msg_addressed:
                         await memory_service.resolve_open_loop(session, ol.id)
-                else:
-                    # Pass open loop with 70-80% likelihood per approved plan
-                    if random.random() < getattr(settings, "OPEN_LOOP_FOLLOWUP_PROBABILITY", 0.75):
-                        top_loop = active_loops[0]
-                        delta_ol = (now - to_utc(top_loop.last_relevant_at)).total_seconds() if top_loop.last_relevant_at else 0
-                        time_desc = f"{int(delta_ol // 3600)}h ago" if delta_ol >= 3600 else f"{int(delta_ol // 60)}m ago"
-                        passed_open_loops.append({
-                            "id": top_loop.id,
-                            "user_message": top_loop.user_message or top_loop.topic,
-                            "persona_state": top_loop.persona_state_at_time or "sleeping",
-                            "time_str": time_desc
-                        })
+
+                remaining_loops = [ol for ol in active_loops if ol.next_review_at is None and not user_msg_addressed]
+                # Pass open loop with 70-80% likelihood per approved plan
+                if remaining_loops and random.random() < getattr(settings, "OPEN_LOOP_FOLLOWUP_PROBABILITY", 0.75):
+                    top_loop = remaining_loops[0]
+                    delta_ol = (now - to_utc(top_loop.last_relevant_at)).total_seconds() if top_loop.last_relevant_at else 0
+                    time_desc = f"{int(delta_ol // 3600)}h ago" if delta_ol >= 3600 else f"{int(delta_ol // 60)}m ago"
+                    passed_open_loops.append({
+                        "id": top_loop.id,
+                        "user_message": top_loop.user_message or top_loop.topic,
+                        "persona_state": top_loop.persona_state_at_time or "sleeping",
+                        "time_str": time_desc
+                    })
 
             # Reset unreplied counter and unpause spontaneous reachouts
             relationship.unreplied_spontaneous_count = 0
@@ -539,7 +545,36 @@ class Orchestrator:
             )
 
             # Fetch today's continuity notes up to current time (Section C)
-            daily_notes = await continuity_service.get_daily_notes_for_time(session, relationship.persona_id, now)
+            all_daily_notes = await continuity_service.get_daily_notes_for_time(session, relationship.persona_id, now)
+
+            # Life mention ceiling with randomness & deduplication tracking
+            exchanges_count = int(fam_context.get("exchanges_since_life_mention", 0)) + 1
+            can_mention_life = False
+            if exchanges_count >= 4:
+                # Ceiling with randomness: only roll chance when threshold met, not an auto trigger
+                can_mention_life = random.random() < 0.65
+
+            mentioned_notes_set = set(fam_context.get("mentioned_journal_events", []))
+            filtered_daily_notes = []
+            for dn in all_daily_notes:
+                dn_text = dn.get("text", str(dn)) if isinstance(dn, dict) else str(dn)
+                # Keep notes if not yet mentioned or if part of live multi-day storyline
+                if dn_text not in mentioned_notes_set or "wedding" in dn_text.lower() or "delhi" in dn_text.lower():
+                    filtered_daily_notes.append(dn)
+
+            # Cap to top 2-3 most relevant items
+            daily_notes = filtered_daily_notes[:3]
+
+            # Pending questions tracking
+            pending_q = await question_tracker_service.get_active_pending_question(session, relationship.id, now)
+            pq_guidance = None
+            if pending_q:
+                u_facts_list = list(structured_facts.get("user_facts", []))
+                pq_guidance = question_tracker_service.build_prompt_guidance(pending_q, u_facts_list, now)
+
+            # Indian Calendar & Location context (e.g. Delhi trip)
+            cal_ctx = IndianCalendar.get_context_for_date(now)
+            loc_override = await continuity_service.get_location_override(session, relationship.persona_id, now)
 
             # Query last 15 assistant messages for "things you already said"
             past_asst_stmt = (
@@ -576,6 +611,10 @@ class Orchestrator:
                 "memories": scoped_memories,
                 "stored_facts": structured_facts,
                 "daily_notes": daily_notes,
+                "can_mention_life": can_mention_life,
+                "calendar_context": cal_ctx,
+                "pending_question_guidance": pq_guidance,
+                "location_override": loc_override,
                 "things_already_said": things_already_said,
                 "open_loops": passed_open_loops,
                 "propensity_hint": propensity_hint_str,
@@ -855,6 +894,70 @@ class Orchestrator:
                 relationship.relationship_stage = response.stage_transition
                 relationship.updated_at = now
 
+            # Track skipped question if LLM returned one
+            if getattr(response, "skipped_question", None):
+                await question_tracker_service.track_skipped_question(
+                    session=session,
+                    relationship_id=relationship.id,
+                    user_id=user.id,
+                    persona_id=relationship.persona_id,
+                    question_text=response.skipped_question,
+                    current_time=now
+                )
+
+            # Resolve pending question if addressed in this reply
+            if pending_q and response.reply_text:
+                q_words = [w for w in re.findall(r"\b\w{3,}\b", pending_q.question_text.lower()) if w not in {"how", "you", "about", "what", "where"}]
+                resp_lower = response.reply_text.lower()
+                if (any(w in resp_lower for w in q_words) or "bataya tha" in resp_lower or "yaad nahi" in resp_lower or "ai companion" in resp_lower):
+                    await question_tracker_service.mark_question_answered(session, pending_q.id, now)
+
+            # Anti-Guilt Audit Logging (Non-blocking safety audit)
+            if response.reply_text:
+                guilt_violations = check_anti_guilt_violations(response.reply_text)
+                for gv in guilt_violations:
+                    session.add(AntiGuiltAuditLog(
+                        relationship_id=relationship.id,
+                        user_id=user.id,
+                        flagged_phrase=gv,
+                        assistant_snippet=response.reply_text[:500],
+                        severity="warning",
+                        created_at=now
+                    ))
+
+            # Deduplication for Life Mentions
+            mentioned_events_list = list(fam_context.get("mentioned_journal_events", []))
+            has_mentioned_life_this_turn = False
+            for dn in daily_notes:
+                dn_txt = dn.get("text", str(dn)) if isinstance(dn, dict) else str(dn)
+                key_phrases = [p for p in re.split(r"[,:;]+", dn_txt) if len(p.strip()) > 8]
+                for kp in key_phrases:
+                    kp_clean = kp.strip().lower()
+                    if kp_clean and kp_clean in response.reply_text.lower():
+                        mentioned_events_list.append(dn_txt)
+                        has_mentioned_life_this_turn = True
+                        break
+
+            if has_mentioned_life_this_turn:
+                fam_context["mentioned_journal_events"] = mentioned_events_list[-25:]
+                fam_context["exchanges_since_life_mention"] = 0
+            else:
+                fam_context["exchanges_since_life_mention"] = exchanges_count
+
+            relationship.familiarity_context = fam_context
+            flag_modified(relationship, "familiarity_context")
+
+            # Resolve Authoritative Persona Presence
+            presence = presence_service.resolve_persona_presence(
+                current_time=now,
+                routine_state=routine_state,
+                last_seen_at=seen_at,
+                last_interaction_at=now,
+                pending_delivery=bool(delay_sec > 0),
+                next_deliver_at=now + timedelta(seconds=delay_sec),
+                location_override=loc_override
+            )
+
             await session.commit()
 
             total_estimated_wait = delay_sec + cumulative_typing_offset
@@ -881,7 +984,8 @@ class Orchestrator:
                 "read_delay_seconds": delay_sec,
                 "delay_seconds": delay_sec,
                 "seen_at": seen_at,
-                "show_skip_wait": show_skip_wait
+                "show_skip_wait": show_skip_wait,
+                "presence": presence
             }
 
     @classmethod

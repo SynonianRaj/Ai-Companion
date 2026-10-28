@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, BackgroundTasks, status
 from sqlalchemy import select, and_, text
@@ -8,7 +8,7 @@ from backend.app.core.config import settings
 from backend.app.db.session import get_db, to_utc, engine, init_db
 from backend.app.db.models import (
     User, Persona, PersonaState, RelationshipState, Conversation, Message,
-    SubscriptionEntitlement, UserReport
+    SubscriptionEntitlement, UserReport, AntiGuiltAuditLog
 )
 from backend.app.services.clock_service import ClockService
 from backend.app.services.lifecycle_service import lifecycle_service
@@ -16,13 +16,15 @@ from backend.app.services.memory_service import memory_service
 from backend.app.services.scheduler_service import scheduler_service
 from backend.app.services.push_service import push_service
 from backend.app.services.presence_service import presence_service
+from backend.app.services.continuity_service import continuity_service
 from backend.app.engine.orchestrator import orchestrator
 from backend.app.engine.adapter import get_activity_for_time
+from backend.app.engine.persona import get_ist_context
 from backend.app.api.schemas import (
     RegisterRequest, RegisterResponse, SendMessageRequest, SendMessageResponse,
     MessageHistoryItem, ChatHistoryResponse, SkipWaitRequest, MemoryItem, UserReportRequest,
     RelationshipSettingsResponse, RelationshipSettingsUpdateRequest,
-    DevClockAdvanceRequest, PushSubscribeRequest, TickResponse
+    DevClockAdvanceRequest, PushSubscribeRequest, TickResponse, PersonaPresence
 )
 
 logger = logging.getLogger(__name__)
@@ -226,6 +228,9 @@ async def send_chat_message(
         client_msg_id=req.client_msg_id
     )
 
+    presence_dict = result.get("presence")
+    presence_obj = PersonaPresence(**presence_dict) if presence_dict else None
+
     return SendMessageResponse(
         role=result["role"],
         content=result["content"],
@@ -239,7 +244,8 @@ async def send_chat_message(
         delay_tier=result.get("delay_tier", "quick"),
         read_delay_seconds=result.get("read_delay_seconds", 0.0),
         seen_at=result.get("seen_at"),
-        show_skip_wait=result.get("show_skip_wait", False)
+        show_skip_wait=result.get("show_skip_wait", False),
+        presence=presence_obj
     )
 
 
@@ -307,6 +313,25 @@ async def get_chat_history(
         wait_seconds = (to_utc(next_deliver_at) - now).total_seconds()
         show_skip_wait = wait_seconds >= 5.0
 
+    # Resolve authoritative presence
+    ist_ctx = get_ist_context(now)
+    routine_state = ist_ctx.get("routine_state", "free")
+    last_msg = messages[-1] if messages else None
+    last_interaction = last_msg.created_at if last_msg else None
+    last_seen = last_msg.seen_at if last_msg else None
+    loc_override = await continuity_service.get_location_override(session, rel.persona_id, now)
+
+    presence_info = presence_service.resolve_persona_presence(
+        current_time=now,
+        routine_state=routine_state,
+        last_seen_at=last_seen,
+        last_interaction_at=last_interaction,
+        pending_delivery=pending_delivery,
+        next_deliver_at=next_deliver_at,
+        location_override=loc_override
+    )
+    presence_obj = PersonaPresence(**presence_info)
+
     return ChatHistoryResponse(
         messages=[
             MessageHistoryItem(
@@ -325,7 +350,8 @@ async def get_chat_history(
         pending_delivery=pending_delivery,
         next_deliver_at=next_deliver_at,
         persona_activity=activity_name,
-        show_skip_wait=show_skip_wait
+        show_skip_wait=show_skip_wait,
+        presence=presence_obj
     )
 
 
@@ -622,4 +648,97 @@ async def internal_database_reset(
         "persona": "aanya_v1",
         "timestamp": ClockService.now()
     }
+
+
+@router.get("/dev/anti-guilt/report")
+async def get_anti_guilt_report(
+    relationship_id: Optional[str] = Query(None),
+    days: int = Query(7),
+    session: AsyncSession = Depends(get_db)
+):
+    """(Compliance & Safety) Weekly report of flagged guilt-trip or pressure lines."""
+    now = to_utc(ClockService.now())
+    cutoff = now - timedelta(days=days)
+    stmt = select(AntiGuiltAuditLog).where(AntiGuiltAuditLog.created_at >= cutoff)
+    if relationship_id:
+        stmt = stmt.where(AntiGuiltAuditLog.relationship_id == relationship_id)
+    stmt = stmt.order_by(AntiGuiltAuditLog.created_at.desc())
+    logs = (await session.execute(stmt)).scalars().all()
+    return {
+        "period_days": days,
+        "total_flagged": len(logs),
+        "entries": [
+            {
+                "id": l.id,
+                "relationship_id": l.relationship_id,
+                "flagged_phrase": l.flagged_phrase,
+                "assistant_snippet": l.assistant_snippet,
+                "severity": l.severity,
+                "created_at": l.created_at
+            }
+            for l in logs
+        ]
+    }
+
+
+@router.get("/persona/presence", response_model=PersonaPresence)
+async def get_persona_presence(
+    relationship_id: str = Query(...),
+    session: AsyncSession = Depends(get_db)
+):
+    """Returns real-time authoritative presence and subtitle for Aanya."""
+    rel = await session.get(RelationshipState, relationship_id)
+    if not rel:
+        raise HTTPException(status_code=404, detail="Relationship not found")
+
+    now = to_utc(ClockService.now())
+    ist_ctx = get_ist_context(now)
+    routine_state = ist_ctx.get("routine_state", "free")
+
+    # Query last active message for seen timestamp
+    msg_stmt = (
+        select(Message)
+        .where(
+            and_(
+                Message.relationship_id == relationship_id,
+                Message.status == "active"
+            )
+        )
+        .order_by(Message.created_at.desc())
+        .limit(1)
+    )
+    last_msg = (await session.execute(msg_stmt)).scalar_one_or_none()
+    last_interaction = last_msg.created_at if last_msg else None
+    last_seen = last_msg.seen_at if last_msg else None
+
+    # Check pending deliveries
+    pending_stmt = (
+        select(Message)
+        .where(
+            and_(
+                Message.relationship_id == relationship_id,
+                Message.status == "active",
+                Message.deliver_at > now
+            )
+        )
+        .order_by(Message.deliver_at.asc())
+        .limit(1)
+    )
+    pending_msg = (await session.execute(pending_stmt)).scalar_one_or_none()
+    pending_delivery = pending_msg is not None
+    next_deliver = pending_msg.deliver_at if pending_msg else None
+
+    loc_override = await continuity_service.get_location_override(session, rel.persona_id, now)
+
+    p_info = presence_service.resolve_persona_presence(
+        current_time=now,
+        routine_state=routine_state,
+        last_seen_at=last_seen,
+        last_interaction_at=last_interaction,
+        pending_delivery=pending_delivery,
+        next_deliver_at=next_deliver,
+        location_override=loc_override
+    )
+    return PersonaPresence(**p_info)
+
 

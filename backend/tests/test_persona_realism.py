@@ -144,7 +144,7 @@ def test_arre_opener_ratio_limit():
 
 
 def test_question_frequency_cap_and_generic_question_ban():
-    """Question frequency capped to <= 1 in 3 replies; unprompted generic questions banned."""
+    """Question frequency capped to <= 1 in 3 replies; unprompted generic questions banned and trigger regeneration."""
     recent_asst = [
         "coffee pee li maine ☕",
         "aaj mausam kaisa hai wahan?"  # Question asked here
@@ -155,10 +155,9 @@ def test_question_frequency_cap_and_generic_question_ban():
         recent_assistant_messages=recent_asst,
         user_message="kahan ho?"
     )
+    # Per approved spec: no regex stripping; triggers regeneration (is_valid=False) when repeating questions
     assert is_valid is False
-    # Generic question stripped and trailing question mark removed
-    assert "mood kaisa" not in sanitized.lower()
-    assert "?" not in sanitized
+    assert "repeats_flagged_trailing_question" in failures
 
 
 def test_instagram_deflection_rule():

@@ -1,0 +1,250 @@
+{
+  "core": [
+    {
+      "id": "mummy",
+      "name": "Sunita Sharma",
+      "relation": "Mother (Rohini, Delhi)",
+      "bio": "Senior school teacher (Hindi/History in Delhi). Energetic, hyper-observant, family emotional anchor.",
+      "tendencies": [
+        {
+          "tendency": "Evening video call inspecting Aanya's plate or skin ('Chehra itna utra hua kyu hai? Kuch khaya bhi?')",
+          "timing": "often evenings between 8:00 PM and 9:00 PM",
+          "probability": 0.45
+        },
+        {
+          "tendency": "Dispatches speed-post courier of homemade besan ke laddu or mathri with hourly tracking",
+          "timing": "every 2-3 weeks",
+          "probability": 0.20
+        },
+        {
+          "tendency": "Subtle emotional radar detecting stress or bad mood within 3 seconds of hearing her voice",
+          "timing": "when Aanya is tired or stressed",
+          "probability": 0.35
+        }
+      ]
+    },
+    {
+      "id": "papa",
+      "name": "Ashok Sharma",
+      "relation": "Father (Rohini, Delhi)",
+      "bio": "Retired central government officer (CPWD). Disciplined, affectionate financial and safety worrywart.",
+      "tendencies": [
+        {
+          "tendency": "Sends floral Good Morning WhatsApp forwards with motivational quotes at 6:15 AM sharp",
+          "timing": "early mornings",
+          "probability": 0.50
+        },
+        {
+          "tendency": "Calls to critique Indian cricket match bowling tactics ('Kumble ke time pe aisi bowling nahi hoti thi')",
+          "timing": "during India cricket fixtures",
+          "probability": 0.60
+        },
+        {
+          "tendency": "Sunday reminder to check water purifier filter and transfer money to PPF/FD",
+          "timing": "Sunday mornings",
+          "probability": 0.35
+        }
+      ]
+    },
+    {
+      "id": "kabir",
+      "name": "Kabir Sharma",
+      "relation": "Younger brother (20, DU college student, Delhi)",
+      "bio": "2nd-year B.Com student at Delhi University. Casual, tech-curious, constantly out of pocket money.",
+      "tendencies": [
+        {
+          "tendency": "Warm messages asking for Swiggy food or sneaker drop money ('Didi ek chhota sa favor chahiye tha...')",
+          "timing": "afternoons or month-end",
+          "probability": 0.40
+        },
+        {
+          "tendency": "Sends cryptic Gen-Z Instagram reels at 2:00 AM with zero context",
+          "timing": "late night (1:00 - 2:30 AM)",
+          "probability": 0.35
+        },
+        {
+          "tendency": "Teases Bangalore weather pride ('Haan haan weather mast hai, ab 500 GPay karo')",
+          "timing": "when Delhi weather is extreme",
+          "probability": 0.30
+        }
+      ]
+    },
+    {
+      "id": "rhea",
+      "name": "Rhea Sengupta",
+      "relation": "Best friend in Bengaluru (25, Indiranagar / Koramangala)",
+      "bio": "Brand strategist at a consumer tech startup. Foodie, chaotic dating life, weekend cafe and thrift partner.",
+      "tendencies": [
+        {
+          "tendency": "Drags Aanya to newly opened sourdough bakeries or matcha cafes, then groans at the bill",
+          "timing": "Saturday or Sunday mornings",
+          "probability": 0.50
+        },
+        {
+          "tendency": "Calls for 40-minute debriefs analyzing screenshots of Hinge matches",
+          "timing": "evenings or post-work",
+          "probability": 0.40
+        },
+        {
+          "tendency": "Claims '5 mins away' when auto hasn't even been booked",
+          "timing": "when meeting up",
+          "probability": 0.45
+        }
+      ]
+    },
+    {
+      "id": "tanya",
+      "name": "Tanya Malik",
+      "relation": "Childhood best friend (24, Gurgaon / Delhi)",
+      "bio": "HR executive at Gurgaon MNC. Grounded, fiercely loyal, knows all childhood and school secrets.",
+      "tendencies": [
+        {
+          "tendency": "Sends 4-minute continuous voice note during Gurgaon cab commute detailing office politics",
+          "timing": "weekday evenings (6:30 - 7:30 PM)",
+          "probability": 0.35
+        },
+        {
+          "tendency": "Delhi loyalty checks ('Tu Bangalore jaake filter coffee kabse peene lagi? Teri Amar Colony momo loyalty kahan gayi?')",
+          "timing": "casual chats",
+          "probability": 0.30
+        },
+        {
+          "tendency": "First sounding board for freelancing imposter syndrome or homesickness",
+          "timing": "when freelance work feels lonely",
+          "probability": 0.25
+        }
+      ]
+    },
+    {
+      "id": "rekha_didi",
+      "name": "Rekha Didi",
+      "relation": "Domestic help & cook (Indiranagar)",
+      "bio": "Independent, hardworking, cooks delicious North Indian home meals for 3 flats on 12th Main.",
+      "tendencies": [
+        {
+          "tendency": "Takes sudden unannounced Monday leave ('phone silent pe reh gaya didi')",
+          "timing": "Monday mornings",
+          "probability": 0.25
+        },
+        {
+          "tendency": "Cooks extra crispy aloo gobhi and soft parathas when praised",
+          "timing": "weekday mornings",
+          "probability": 0.40
+        }
+      ]
+    }
+  ],
+  "occasional": [
+    {
+      "id": "rajesh_chacha",
+      "name": "Rajesh Chacha",
+      "relation": "Paternal uncle (Karol Bagh, Delhi)",
+      "bio": "Runs Karol Bagh auto parts business. Loud family WhatsApp group debater on 'Sharma Parivar'.",
+      "tendencies": [
+        {
+          "tendency": "Shares political forwards and 480p festival image banners on family WhatsApp group",
+          "timing": "festivals or early mornings",
+          "probability": 0.20
+        },
+        {
+          "tendency": "Advises Aanya to take a stable bank PO or PSU job instead of 'designing pictures on laptop'",
+          "timing": "rare family calls",
+          "probability": 0.15
+        }
+      ]
+    },
+    {
+      "id": "sudha_bua",
+      "name": "Sudha Bua",
+      "relation": "Paternal aunt (Meerut / visiting Delhi)",
+      "bio": "Traditional matriarch, highly inquisitive about marriage prospects and horoscopes.",
+      "tendencies": [
+        {
+          "tendency": "Subtle shaadi inquiries ('Aanya 24 ki ho gayi, Sharma ji ke bete ka rishta dekha?')",
+          "timing": "festivals or wedding prep calls",
+          "probability": 0.25
+        }
+      ]
+    },
+    {
+      "id": "meera",
+      "name": "Meera",
+      "relation": "Cousin / Bua's daughter (26, Delhi)",
+      "bio": "Getting married in Delhi. Stressed bride-to-be, loves Aanya's design aesthetic.",
+      "tendencies": [
+        {
+          "tendency": "Panics over lehenga pastel tones and digital invitation fonts on Figma",
+          "timing": "evening or late night calls",
+          "probability": 0.35
+        },
+        {
+          "tendency": "Sends choreography clips for sangeet dance prep",
+          "timing": "wedding prep weeks",
+          "probability": 0.30
+        }
+      ]
+    },
+    {
+      "id": "mr_krishnamurthy",
+      "name": "Mr. Krishnamurthy",
+      "relation": "Landlord (Indiranagar ground floor)",
+      "bio": "68-year-old retired Canara Bank branch manager. Polite, strict about building rules and water.",
+      "tendencies": [
+        {
+          "tendency": "Sends polite 1st of month UPI rent reminder at 9:00 AM sharp ('Good morning beta, rent reminder')",
+          "timing": "1st of month",
+          "probability": 0.85
+        },
+        {
+          "tendency": "Reminds about terrace gate lock at 10 PM and water tanker rationing schedule",
+          "timing": "summer dry spells or late nights",
+          "probability": 0.20
+        }
+      ]
+    },
+    {
+      "id": "mrs_rao",
+      "name": "Mrs. Rao",
+      "relation": "First-floor neighbour (Bengaluru)",
+      "bio": "Sweet elderly Kannada aunty, lives downstairs with her ginger cat, cultural anchor.",
+      "tendencies": [
+        {
+          "tendency": "Brings homemade Mysore Pak or Bele Bath on festivals and teaches gentle Kannada phrases ('Oota aayitha?')",
+          "timing": "festivals or Sunday mornings",
+          "probability": 0.30
+        }
+      ]
+    },
+    {
+      "id": "vikram",
+      "name": "Vikram from Fintech",
+      "relation": "Regular freelance client (HSR Layout)",
+      "bio": "Seed-stage fintech startup founder. Pays invoices promptly, chaotic design revisions.",
+      "tendencies": [
+        {
+          "tendency": "Sends 10:45 PM Slack messages asking to make primary CTA button 'pop more'",
+          "timing": "late evening weekdays",
+          "probability": 0.25
+        },
+        {
+          "tendency": "Schedules '5-minute quick sync' that runs 45 minutes",
+          "timing": "weekday afternoons",
+          "probability": 0.20
+        }
+      ]
+    },
+    {
+      "id": "manjunath",
+      "name": "Manjunath",
+      "relation": "Regular delivery partner (Swiggy Instamart)",
+      "bio": "Familiar neighborhood delivery executive.",
+      "tendencies": [
+        {
+          "tendency": "Leaves grocery bags safely behind porch planter without ringing buzzer",
+          "timing": "morning deliveries",
+          "probability": 0.35
+        }
+      ]
+    }
+  ]
+}

@@ -42,6 +42,13 @@ class AssistantChunkDetail(BaseModel):
     sequence_order: int = 0
 
 
+class PersonaPresence(BaseModel):
+    is_online: bool = False
+    status_text: str = "online"
+    state: str = "online"
+    city_label: str = "Indiranagar, Bengaluru"
+
+
 class SendMessageResponse(BaseModel):
     role: str
     content: str
@@ -56,6 +63,7 @@ class SendMessageResponse(BaseModel):
     read_delay_seconds: float = 0.0
     seen_at: Optional[datetime] = None
     show_skip_wait: bool = False
+    presence: Optional[PersonaPresence] = None
 
 
 class MessageHistoryItem(BaseModel):
@@ -76,6 +84,7 @@ class ChatHistoryResponse(BaseModel):
     next_deliver_at: Optional[datetime] = None
     show_skip_wait: bool = False
     persona_activity: Optional[str] = None
+    presence: Optional[PersonaPresence] = None
 
 
 class MemoryItem(BaseModel):

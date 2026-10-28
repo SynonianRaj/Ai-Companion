@@ -85,6 +85,7 @@ class LLMResponse(BaseModel):
     extracted_memories: List[Dict[str, Any]] = []
     extracted_open_loops: List[str] = []
     open_loop: bool = False
+    skipped_question: Optional[str] = None
     emotion_displayed: str = "warm"
     persona_activity: str = "Relaxing at home with music"
     delay_tier: str = "quick"
@@ -1314,6 +1315,11 @@ class GroqLLMAdapter(BaseLLMAdapter):
             )
 
             has_ol = bool(parsed.get("open_loop", False))
+            skipped_q = parsed.get("skipped_question")
+            if skipped_q and isinstance(skipped_q, str):
+                skipped_q = skipped_q.strip() or None
+            else:
+                skipped_q = None
 
             return LLMResponse(
                 reply_text=full_reply,
@@ -1323,6 +1329,7 @@ class GroqLLMAdapter(BaseLLMAdapter):
                 provider="groq",
                 model=model_name,
                 open_loop=has_ol,
+                skipped_question=skipped_q,
                 emotion_displayed="warm_authentic",
                 persona_activity=activity_name,
                 delay_tier=pacing["delay_tier"],
@@ -1749,6 +1756,12 @@ class GeminiLLMAdapter(BaseLLMAdapter):
                             delay_tier_override=delay_tier_override
                         )
 
+                        skipped_q = parsed.get("skipped_question")
+                        if skipped_q and isinstance(skipped_q, str):
+                            skipped_q = skipped_q.strip() or None
+                        else:
+                            skipped_q = None
+
                         candidate_resp = LLMResponse(
                             reply_text=full_reply,
                             chunks=sanitized_chunks,
@@ -1757,6 +1770,7 @@ class GeminiLLMAdapter(BaseLLMAdapter):
                             provider="gemini",
                             model=model_name,
                             open_loop=has_ol,
+                            skipped_question=skipped_q,
                             emotion_displayed="warm_authentic",
                             persona_activity=activity_name,
                             delay_tier=pacing["delay_tier"],

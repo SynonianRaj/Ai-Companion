@@ -236,15 +236,70 @@ class PushSubscription(Base):
 
 class PersonaDailyNote(Base):
     """
-    Daily micro-journal for persona continuity (Section C - Option 1).
-    Stores 3 authentic daily notes generated once per calendar day (IST).
+    Daily micro-journal for persona continuity (Section C - Option 1, expanded).
+    Stores 4-6 authentic daily notes generated once per calendar day (IST).
     """
     __tablename__ = "persona_daily_notes"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
     persona_id: Mapped[str] = mapped_column(String(50), index=True)
     date_str: Mapped[str] = mapped_column(String(10), index=True)  # YYYY-MM-DD
-    notes: Mapped[List[str]] = mapped_column(JSON, default=list)
+    notes: Mapped[List[Any]] = mapped_column(JSON, default=list)  # List of string notes or structured event dicts
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class PersonaStoryline(Base):
+    """
+    Tracks ongoing multi-day narrative arcs (e.g., Meera's wedding Delhi trip, landlord water issue).
+    """
+    __tablename__ = "persona_storylines"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    persona_id: Mapped[str] = mapped_column(String(50), index=True)
+    storyline_id: Mapped[str] = mapped_column(String(100), index=True)  # e.g. "meera_wedding", "landlord_water_dispute"
+    title: Mapped[str] = mapped_column(String(255))
+    current_day: Mapped[int] = mapped_column(Integer, default=1)
+    total_days: Mapped[int] = mapped_column(Integer, default=5)
+    arc_summary: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(20), default="active")  # active, resolved, faded
+    location_override: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)  # e.g. "Delhi (Rohini)" during wedding
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class PendingQuestion(Base):
+    """
+    Tracks questions asked by the user that Aanya skipped, deflected, or missed.
+    Detected via LLM skipped_question output. Expires after 36 hours.
+    """
+    __tablename__ = "pending_questions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    relationship_id: Mapped[str] = mapped_column(String(36), index=True)
+    user_id: Mapped[str] = mapped_column(String(36), index=True)
+    persona_id: Mapped[str] = mapped_column(String(50), index=True)
+    question_text: Mapped[str] = mapped_column(Text)
+    question_type: Mapped[str] = mapped_column(String(50), default="general")  # user_fact_query, ai_sincerity, personal, general
+    status: Mapped[str] = mapped_column(String(20), default="pending")  # pending, answered, expired
+    asked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    answered_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class AntiGuiltAuditLog(Base):
+    """
+    STRICT SAFETY RULE: Non-blocking audit log of flagged emotional pressure or guilt-trip phrases.
+    Stores metadata and flagged snippet for weekly compliance auditing.
+    """
+    __tablename__ = "anti_guilt_audit_logs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    relationship_id: Mapped[str] = mapped_column(String(36), index=True)
+    user_id: Mapped[str] = mapped_column(String(36), index=True)
+    flagged_phrase: Mapped[str] = mapped_column(String(255))
+    assistant_snippet: Mapped[str] = mapped_column(Text)
+    severity: Mapped[str] = mapped_column(String(50), default="warning")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
 
 
