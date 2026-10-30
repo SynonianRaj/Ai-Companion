@@ -29,6 +29,7 @@ class SendMessageRequest(BaseModel):
     messages: Optional[List[str]] = None
     pacing_mode: Optional[str] = "realistic"  # 'realistic' | 'turbo'
     client_msg_id: Optional[str] = None
+    client_msg_ids: Optional[List[str]] = None
 
 
 class SkipWaitRequest(BaseModel):
@@ -55,6 +56,7 @@ class SendMessageResponse(BaseModel):
     content: str
     chunks: List[str] = []
     chunk_details: List[AssistantChunkDetail] = []
+    user_message_ids: List[str] = []
     crisis_handoff: Optional[Dict[str, Any]] = None
     relationship_stage: str
     lifecycle_status: str
@@ -76,6 +78,7 @@ class MessageHistoryItem(BaseModel):
     seen_at: Optional[datetime] = None
     status: str = "active"
     sequence_order: int = 0
+    client_msg_id: Optional[str] = None
     metadata: Dict[str, Any] = {}
 
 

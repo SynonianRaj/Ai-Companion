@@ -1,4 +1,5 @@
 from typing import List, Union
+from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field
 import json
@@ -90,7 +91,15 @@ class Settings(BaseSettings):
     VAPID_CLAIM_EMAIL: str = "mailto:support@aanya-companion.app"
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=(
+            str(Path(__file__).resolve().parents[3] / ".env")
+            if (Path(__file__).resolve().parents[3] / ".env").is_file()
+            else (
+                str(Path(__file__).resolve().parents[2] / ".env")
+                if (Path(__file__).resolve().parents[2] / ".env").is_file()
+                else ".env"
+            )
+        ),
         env_file_encoding="utf-8",
         extra="ignore"
     )

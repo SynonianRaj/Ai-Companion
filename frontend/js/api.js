@@ -39,6 +39,9 @@ export const api = {
       }
       payload.pacing_mode = options.pacingMode || "realistic";
       if (options.clientMsgId) payload.client_msg_id = options.clientMsgId;
+      if (options.clientMsgIds && Array.isArray(options.clientMsgIds)) {
+        payload.client_msg_ids = options.clientMsgIds;
+      }
     }
 
     const res = await fetch(`${API_BASE}/chat/send`, {
@@ -128,6 +131,12 @@ export const api = {
       method: "POST"
     });
     if (!res.ok) throw new Error("Failed to reset clock");
+    return res.json();
+  },
+
+  async getLlmLogs() {
+    const res = await fetch(`${API_BASE}/dev/llm-logs`);
+    if (!res.ok) return { logs: [] };
     return res.json();
   },
 

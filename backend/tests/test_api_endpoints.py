@@ -279,3 +279,36 @@ async def test_idempotency_and_soft_cancel(client, db_session):
     hist = res_hist.json()
     for m in hist["messages"]:
         assert m["status"] == "active"
+
+
+@pytest.mark.asyncio
+async def test_user_message_deduplication_and_client_ids(client, db_session):
+    reg = await client.post("/api/auth/register", json={
+        "username": "dedup_user",
+        "age_confirmed": True,
+        "ai_disclosure_accepted": True
+    })
+    rel_id = reg.json()["relationship_id"]
+
+    client_ids = ["client_msg_001", "client_msg_002"]
+    res_send = await client.post("/api/chat/send", json={
+        "relationship_id": rel_id,
+        "messages": ["Hey there", "Are you around today?"],
+        "client_msg_ids": client_ids,
+        "pacing_mode": "turbo"
+    })
+    assert res_send.status_code == 200
+    data = res_send.json()
+    assert "user_message_ids" in data
+    assert len(data["user_message_ids"]) == 2
+
+    res_hist = await client.get(f"/api/chat/history?relationship_id={rel_id}")
+    assert res_hist.status_code == 200
+    hist = res_hist.json()
+
+    user_msgs = [m for m in hist["messages"] if m["role"] == "user"]
+    assert len(user_msgs) == 2
+    assert user_msgs[0]["client_msg_id"] == "client_msg_001"
+    assert user_msgs[1]["client_msg_id"] == "client_msg_002"
+    assert user_msgs[0]["id"] == data["user_message_ids"][0]
+    assert user_msgs[1]["id"] == data["user_message_ids"][1]

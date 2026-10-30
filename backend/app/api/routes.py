@@ -225,7 +225,8 @@ async def send_chat_message(
         user_message=req.message,
         user_messages=req.messages,
         pacing_mode=req.pacing_mode or "realistic",
-        client_msg_id=req.client_msg_id
+        client_msg_id=req.client_msg_id,
+        client_msg_ids=req.client_msg_ids
     )
 
     presence_dict = result.get("presence")
@@ -236,6 +237,7 @@ async def send_chat_message(
         content=result["content"],
         chunks=result.get("chunks", [result["content"]]),
         chunk_details=result.get("chunk_details", []),
+        user_message_ids=result.get("user_message_ids", []),
         crisis_handoff=result.get("crisis_handoff"),
         relationship_stage=result.get("relationship_stage", rel.relationship_stage),
         lifecycle_status=result.get("lifecycle_status", rel.lifecycle_status),
@@ -343,6 +345,7 @@ async def get_chat_history(
                 seen_at=m.seen_at,
                 status=m.status,
                 sequence_order=m.sequence_order,
+                client_msg_id=getattr(m, "client_msg_id", None),
                 metadata=m.metadata_json or {}
             )
             for m in messages
@@ -484,6 +487,13 @@ async def reset_test_clock():
     """(Dev/Test only) Resets test clock to system time."""
     ClockService.reset()
     return {"status": "reset", "now": ClockService.now()}
+
+
+@router.get("/dev/llm-logs")
+async def get_dev_llm_logs():
+    """(Dev/Test only) Returns recent LLM requests with consumed prompts, messages, and responses."""
+    from backend.app.engine.adapter import get_recent_llm_logs
+    return {"logs": get_recent_llm_logs()}
 
 
 # --- Background Scheduler & Universal Cron Tick ---

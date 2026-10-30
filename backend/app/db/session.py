@@ -5,6 +5,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 from backend.app.core.config import settings
 from backend.app.db.base import Base
+import backend.app.db.models  # Ensures all model classes are registered on Base.metadata
 from backend.app.db.models import Persona, PersonaState
 
 

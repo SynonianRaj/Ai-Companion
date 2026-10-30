@@ -6,6 +6,7 @@ import time
 import logging
 import hashlib
 from typing import Dict, Any, List, Optional, Tuple
+from collections import deque
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 import httpx
@@ -30,6 +31,61 @@ from backend.app.engine.persona import (
 from backend.app.engine.vocabulary import vocabulary_validator
 
 logger = logging.getLogger(__name__)
+
+# In-memory circular buffer of recent LLM requests for dev inspection & logging
+RECENT_LLM_LOGS: deque = deque(maxlen=30)
+
+
+def record_llm_interaction(
+    provider: str,
+    model: str,
+    system_prompt: str,
+    consumed_input: Any,
+    raw_response: str,
+    parsed_chunks: List[str],
+    latency_ms: float,
+    status: str = "success"
+) -> None:
+    """Records LLM interaction in in-memory dev buffer and prints clear console log."""
+    entry = {
+        "id": hashlib.md5(f"{time.time()}_{random.random()}".encode()).hexdigest()[:10],
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "provider": provider,
+        "model": model,
+        "system_prompt": system_prompt,
+        "consumed_input": consumed_input,
+        "raw_response": raw_response or "",
+        "parsed_chunks": parsed_chunks or [],
+        "latency_ms": latency_ms,
+        "status": status
+    }
+    RECENT_LLM_LOGS.appendleft(entry)
+
+    # Format human-readable console log banner for server terminal
+    consumed_summary = (
+        json.dumps(consumed_input, indent=2, ensure_ascii=False)
+        if isinstance(consumed_input, (dict, list))
+        else str(consumed_input)
+    )
+    banner = (
+        f"\n{'='*80}\n"
+        f"🤖 [LLM REQUEST LOG]\n"
+        f"Provider: {provider} | Model: {model} | Latency: {latency_ms:.1f}ms | Status: {status}\n"
+        f"{'-'*80}\n"
+        f"📜 [SYSTEM PROMPT CONSUMED]:\n{system_prompt}\n"
+        f"{'-'*80}\n"
+        f"📥 [CONVERSATION CONTEXT / INPUT CONSUMED]:\n{consumed_summary}\n"
+        f"{'-'*80}\n"
+        f"📤 [RESPONSE CHUNKS GENERATED]:\n{parsed_chunks}\n"
+        f"Raw Output: {(raw_response or '')[:300] + ('...' if len(raw_response or '') > 300 else '')}\n"
+        f"{'='*80}\n"
+    )
+    logger.info(banner)
+
+
+def get_recent_llm_logs() -> List[Dict[str, Any]]:
+    """Returns recent LLM interaction logs for dev inspector."""
+    return list(RECENT_LLM_LOGS)
 
 
 def strip_thinking_tags(text: str) -> str:
@@ -1256,6 +1312,16 @@ class GroqLLMAdapter(BaseLLMAdapter):
             delay_sec = float(parsed.get("delay_seconds", 0.0) or 0.0)
 
             if action == "ignore_until_free":
+                record_llm_interaction(
+                    provider="groq",
+                    model=model_name,
+                    system_prompt=system_content,
+                    consumed_input=messages,
+                    raw_response=content,
+                    parsed_chunks=[],
+                    latency_ms=latency_ms,
+                    status="ignore_until_free"
+                )
                 return LLMResponse(
                     reply_text="",
                     chunks=[],
@@ -1320,6 +1386,17 @@ class GroqLLMAdapter(BaseLLMAdapter):
                 skipped_q = skipped_q.strip() or None
             else:
                 skipped_q = None
+
+            record_llm_interaction(
+                provider="groq",
+                model=model_name,
+                system_prompt=system_content,
+                consumed_input=messages,
+                raw_response=content,
+                parsed_chunks=sanitized_chunks,
+                latency_ms=latency_ms,
+                status="success"
+            )
 
             return LLMResponse(
                 reply_text=full_reply,
@@ -1679,7 +1756,9 @@ class GeminiLLMAdapter(BaseLLMAdapter):
 
             for attempt in range(1, 3):
                 try:
+                    t_gemini_start = time.perf_counter()
                     res = await client.post(url, json=payload)
+                    latency_ms = round((time.perf_counter() - t_gemini_start) * 1000, 2)
                     if res.status_code == 200:
                         data = res.json()
                         candidates = data.get("candidates", [])
@@ -1699,6 +1778,16 @@ class GeminiLLMAdapter(BaseLLMAdapter):
                         has_ol = bool(parsed.get("open_loop", False))
 
                         if action == "ignore_until_free":
+                            record_llm_interaction(
+                                provider="gemini",
+                                model=model_name,
+                                system_prompt=system_prompt,
+                                consumed_input=contents,
+                                raw_response=raw_text,
+                                parsed_chunks=[],
+                                latency_ms=latency_ms,
+                                status="ignore_until_free"
+                            )
                             return LLMResponse(
                                 reply_text="",
                                 chunks=[],
@@ -1778,6 +1867,16 @@ class GeminiLLMAdapter(BaseLLMAdapter):
                             typing_delays=pacing["typing_delays"]
                         )
                         least_bad_candidate = candidate_resp
+                        record_llm_interaction(
+                            provider="gemini",
+                            model=model_name,
+                            system_prompt=system_prompt,
+                            consumed_input=contents,
+                            raw_response=raw_text,
+                            parsed_chunks=sanitized_chunks,
+                            latency_ms=latency_ms,
+                            status="success"
+                        )
                         return candidate_resp
 
                     elif res.status_code in (503, 429):

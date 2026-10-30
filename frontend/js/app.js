@@ -1,4 +1,4 @@
-import { api } from "./api.js?v=9.4";
+import { api } from "./api.js?v=9.5";
 
 // Check if running directly as local file
 if (window.location.protocol === "file:") {
@@ -18,8 +18,11 @@ const state = {
   pendingDeliveryTimer: null,
   activeChunkTimeouts: [],
   renderedMsgIds: new Set(),
+  renderedClientMsgIds: new Set(),
+  pendingPollingMsgIds: new Set(),
   pendingChunkIds: new Set(),
-  lastRenderedDateKey: null
+  lastRenderedDateKey: null,
+  pendingInitiatedMessage: null
 };
 
 // Register Service Worker
@@ -42,42 +45,85 @@ const installPwaBtn = document.getElementById("install-pwa-btn");
 const noticeBanner = document.getElementById("notice-banner");
 const personaStatusText = document.getElementById("persona-status-text");
 
-// PWA Install Handling
+// PWA Install Handling & Modals
+const pwaInstallModal = document.getElementById("pwa-install-modal");
+const pwaIosInstructions = document.getElementById("pwa-instructions-ios");
+const pwaAndroidInstructions = document.getElementById("pwa-instructions-android");
+const pwaNativeInstallBtn = document.getElementById("pwa-native-install-btn");
+const closePwaInstallBtn = document.getElementById("close-pwa-install-btn");
+
 let deferredInstallPrompt = null;
-window.addEventListener("beforeinstallprompt", (e) => {
-  e.preventDefault();
-  deferredInstallPrompt = e;
-  if (installPwaBtn) {
-    installPwaBtn.style.display = "inline-flex";
-  }
-});
+const isStandalone = window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone === true;
 
-if (installPwaBtn) {
-  // Check if already in standalone display mode
-  const isStandalone = window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone === true;
-  if (!isStandalone) {
-    // Show install button for mobile devices by default
-    const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
-    if (isMobile) {
-      installPwaBtn.style.display = "inline-flex";
-    }
+function openPwaInstallModal() {
+  if (!pwaInstallModal) return;
+  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+  if (isIOS) {
+    if (pwaIosInstructions) pwaIosInstructions.style.display = "block";
+    if (pwaAndroidInstructions) pwaAndroidInstructions.style.display = "none";
+  } else {
+    if (pwaIosInstructions) pwaIosInstructions.style.display = "none";
+    if (pwaAndroidInstructions) pwaAndroidInstructions.style.display = "block";
   }
 
-  installPwaBtn.addEventListener("click", async () => {
+  if (deferredInstallPrompt && pwaNativeInstallBtn) {
+    pwaNativeInstallBtn.style.display = "block";
+  } else if (pwaNativeInstallBtn) {
+    pwaNativeInstallBtn.style.display = "none";
+  }
+
+  pwaInstallModal.style.display = "flex";
+}
+
+if (closePwaInstallBtn) {
+  closePwaInstallBtn.addEventListener("click", () => {
+    if (pwaInstallModal) pwaInstallModal.style.display = "none";
+  });
+}
+
+if (pwaNativeInstallBtn) {
+  pwaNativeInstallBtn.addEventListener("click", async () => {
     if (deferredInstallPrompt) {
       deferredInstallPrompt.prompt();
       const { outcome } = await deferredInstallPrompt.userChoice;
       if (outcome === "accepted") {
-        installPwaBtn.style.display = "none";
+        if (installPwaBtn) installPwaBtn.style.display = "none";
+        if (pwaInstallModal) pwaInstallModal.style.display = "none";
       }
       deferredInstallPrompt = null;
+    }
+  });
+}
+
+window.addEventListener("beforeinstallprompt", (e) => {
+  e.preventDefault();
+  deferredInstallPrompt = e;
+  if (installPwaBtn && !isStandalone) {
+    installPwaBtn.style.display = "inline-flex";
+  }
+  if (pwaNativeInstallBtn) {
+    pwaNativeInstallBtn.style.display = "block";
+  }
+});
+
+if (installPwaBtn) {
+  if (isStandalone) {
+    installPwaBtn.style.display = "none";
+  } else {
+    installPwaBtn.style.display = "inline-flex";
+  }
+
+  installPwaBtn.addEventListener("click", () => {
+    if (deferredInstallPrompt) {
+      deferredInstallPrompt.prompt();
+      deferredInstallPrompt.userChoice.then(({ outcome }) => {
+        if (outcome === "accepted") {
+          installPwaBtn.style.display = "none";
+        }
+        deferredInstallPrompt = null;
+      });
     } else {
-      const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
-      if (isIOS) {
-        alert("To install Aanya on your iPhone:\n1. Tap the Share button (⎋ box with arrow) at the bottom of Safari.\n2. Scroll down and tap 'Add to Home Screen' (⊞).");
-      } else {
-        alert("To install Aanya:\nTap your browser's menu (three dots ⋮) at the top right and tap 'Install app' or 'Add to Home screen'.");
-      }
+      openPwaInstallModal();
     }
   });
 }
@@ -86,6 +132,9 @@ window.addEventListener("appinstalled", () => {
   deferredInstallPrompt = null;
   if (installPwaBtn) {
     installPwaBtn.style.display = "none";
+  }
+  if (pwaInstallModal) {
+    pwaInstallModal.style.display = "none";
   }
 });
 
@@ -220,8 +269,16 @@ document.getElementById("onboarding-form").addEventListener("submit", async (e) 
     localStorage.setItem("aanya_rel", JSON.stringify(state.relationship));
 
     onboardingModal.style.display = "none";
-    loadChatHistory();
+    await loadChatHistory();
     refreshRelationshipStatus();
+
+    // If user initiated a message before onboarding (e.g. "hey"), automatically dispatch it now!
+    if (state.pendingInitiatedMessage) {
+      const initialText = state.pendingInitiatedMessage;
+      state.pendingInitiatedMessage = null;
+      chatInput.value = initialText;
+      handleUserMessageInput();
+    }
   } catch (err) {
     errorEl.textContent = err.message;
   }
@@ -303,12 +360,13 @@ async function loadChatHistory() {
 
     chatFeed.innerHTML = "";
     state.renderedMsgIds.clear();
+    state.renderedClientMsgIds.clear();
+    state.pendingPollingMsgIds.clear();
     state.pendingChunkIds.clear();
     state.lastRenderedDateKey = null;
 
     if (messages.length === 0) {
-      // Opening Turn: trigger grounded stranger opener
-      appendInitialIcebreaker();
+      renderEmptyChatState();
       knownMessageCount = 0;
     } else {
       // Canonical chronological sort: deliver_at (or created_at), tie-broken by sequence_order, then id
@@ -327,6 +385,7 @@ async function loadChatHistory() {
         const isFollowup = (msg.role === lastRole);
         appendMessageElement(msg.role, msg.content, {
           id: msg.id,
+          clientMsgId: msg.client_msg_id,
           timestamp: msg.deliver_at || msg.created_at,
           seenAt: msg.seen_at,
           status: msg.status,
@@ -363,6 +422,9 @@ async function loadChatHistory() {
       }
       state.pendingDeliveryTimer = setTimeout(() => {
         removeTypingIndicator();
+        if (state.userBurstQueue.length > 0) {
+          return;
+        }
         loadChatHistory();
       }, waitMs);
     } else {
@@ -376,38 +438,68 @@ async function loadChatHistory() {
   }
 }
 
-function appendInitialIcebreaker() {
-  const cleanName = state.user && state.user.username ? state.user.username : "there";
-  const city = state.user && state.user.city ? state.user.city : null;
+function renderEmptyChatState() {
+  const existing = document.getElementById("chat-empty-state");
+  if (existing) return;
+  const emptyDiv = document.createElement("div");
+  emptyDiv.id = "chat-empty-state";
+  emptyDiv.className = "chat-empty-state";
+  const nameMention = (state.user && state.user.username) ? ` ${state.user.username}` : "";
+  emptyDiv.innerHTML = `
+    <div class="empty-avatar">A</div>
+    <h3>Say hi to Aanya</h3>
+    <p>Aanya is online in Indiranagar, Bengaluru. Send a message below to start chatting${nameMention}!</p>
+  `;
+  chatFeed.appendChild(emptyDiv);
+}
 
-  const chunks = [
-    `Hey ${cleanName}! Nice to connect with you :)`,
-    "I'm Aanya btw. Was just taking a quick breather from work with some chai ☕"
-  ];
-  if (city) {
-    chunks.push(`Aanya from Bangalore here. ${city} se ho na tum? Tell me a bit about what it's like living there!`);
-  } else {
-    chunks.push("Pehle yeh batao, which city are you texting from? Tell me a bit about yourself!");
-  }
-
-  const nowIso = new Date().toISOString();
-  chunks.forEach((c, idx) => {
-    appendMessageElement("assistant", c, {
-      id: `icebreaker_${idx}`,
-      timestamp: nowIso,
-      isFollowup: idx > 0
-    });
-  });
+function removeEmptyChatState() {
+  const emptyDiv = document.getElementById("chat-empty-state");
+  if (emptyDiv) emptyDiv.remove();
 }
 
 // Append Message to Feed
 function appendMessageElement(role, content, options = {}) {
   const { id, clientMsgId, timestamp, seenAt, isFollowup, status } = options;
 
-  // Deduplication guard: Never append a duplicate message with the same database ID
-  if (id && state.renderedMsgIds.has(id)) {
-    const existing = document.querySelector(`[data-msg-id="${id}"]`);
-    if (existing) return existing;
+  removeEmptyChatState();
+
+  // Deduplication guard 1: Match by database ID
+  if (id) {
+    const existingById = document.querySelector(`[data-msg-id="${id}"]`);
+    if (existingById) return existingById;
+    if (state.renderedMsgIds.has(id)) return null;
+  }
+
+  // Deduplication guard 2: Match by clientMsgId
+  if (clientMsgId) {
+    const existingByClient = document.querySelector(`[data-client-id="${clientMsgId}"]`);
+    if (existingByClient) {
+      if (id) {
+        existingByClient.setAttribute("data-msg-id", id);
+        state.renderedMsgIds.add(id);
+      }
+      return existingByClient;
+    }
+  }
+
+  // Deduplication guard 3: For user bubbles, if database ID is provided (e.g. from history or polling),
+  // match any unlinked user bubble in the DOM that has identical text!
+  if (role === "user" && id) {
+    const unattachedUserEls = Array.from(document.querySelectorAll(".message-wrapper.user:not([data-msg-id])"));
+    const match = unattachedUserEls.find(el => {
+      const bubble = el.querySelector(".message-bubble");
+      return bubble && bubble.textContent.trim() === (content || "").trim();
+    });
+    if (match) {
+      match.setAttribute("data-msg-id", id);
+      state.renderedMsgIds.add(id);
+      if (clientMsgId) {
+        match.setAttribute("data-client-id", clientMsgId);
+        state.renderedClientMsgIds.add(clientMsgId);
+      }
+      return match;
+    }
   }
 
   // Ensure WhatsApp-style date separator is rendered if calendar day changed
@@ -425,6 +517,7 @@ function appendMessageElement(role, content, options = {}) {
   }
   if (clientMsgId) {
     wrapper.setAttribute("data-client-id", clientMsgId);
+    state.renderedClientMsgIds.add(clientMsgId);
   }
 
   const bubble = document.createElement("div");
@@ -461,9 +554,6 @@ function appendMessageElement(role, content, options = {}) {
   wrapper.appendChild(meta);
   chatFeed.appendChild(wrapper);
   chatFeed.scrollTop = chatFeed.scrollHeight;
-
-  return wrapper;
-}
 
   return wrapper;
 }
@@ -559,6 +649,7 @@ function handleUserMessageInput() {
   if (!text) return;
 
   if (!state.user || !state.relationship || !state.relationship.id) {
+    state.pendingInitiatedMessage = text;
     showOnboarding();
     return;
   }
@@ -624,14 +715,27 @@ async function flushUserBurst() {
   });
 
   const messagesList = currentBurst.map(b => b.text);
+  const clientMsgIds = currentBurst.map(b => b.clientMsgId);
   const primaryClientMsgId = currentBurst[0].clientMsgId;
 
   try {
     const res = await api.sendMessage(state.relationship.id, {
       messages: messagesList,
       pacingMode: state.pacingMode,
-      clientMsgId: primaryClientMsgId
+      clientMsgId: primaryClientMsgId,
+      clientMsgIds: clientMsgIds
     });
+
+    // Tag the optimistic user bubble(s) with their database IDs immediately!
+    if (res.user_message_ids && Array.isArray(res.user_message_ids)) {
+      currentBurst.forEach((item, idx) => {
+        const dbId = res.user_message_ids[idx];
+        if (dbId && item.element) {
+          item.element.setAttribute("data-msg-id", dbId);
+          state.renderedMsgIds.add(dbId);
+        }
+      });
+    }
 
     if (res.crisis_handoff) {
       renderCrisisCard(res.crisis_handoff);
@@ -1031,16 +1135,57 @@ async function checkForNewMessages() {
     const res = await api.getHistory(state.relationship.id);
     const msgs = res.messages || (Array.isArray(res) ? res : []);
 
-    // Filter out messages already rendered in DOM or pending in active chunk delivery
-    const unrenderedMsgs = msgs.filter(m =>
-      !state.renderedMsgIds.has(m.id) && !state.pendingChunkIds.has(m.id)
-    );
+    // Filter out messages already rendered in DOM, pending chunk deliveries, or already polling
+    const unrenderedMsgs = msgs.filter(m => {
+      if (!m || !m.id) return false;
+      if (state.renderedMsgIds.has(m.id)) return false;
+      if (state.pendingChunkIds.has(m.id)) return false;
+      if (state.pendingPollingMsgIds.has(m.id)) return false;
+
+      // Check if this message is already in DOM by data-msg-id
+      if (document.querySelector(`[data-msg-id="${m.id}"]`)) {
+        state.renderedMsgIds.add(m.id);
+        return false;
+      }
+
+      // Check if this is an already rendered user message
+      if (m.role === "user") {
+        if (m.client_msg_id) {
+          const elByClient = document.querySelector(`[data-client-id="${m.client_msg_id}"]`);
+          if (elByClient) {
+            elByClient.setAttribute("data-msg-id", m.id);
+            state.renderedMsgIds.add(m.id);
+            state.renderedClientMsgIds.add(m.client_msg_id);
+            return false;
+          }
+        }
+        // Fallback: match by content on unattached user bubble
+        const unattached = Array.from(document.querySelectorAll(".message-wrapper.user:not([data-msg-id])"));
+        const match = unattached.find(el => {
+          const b = el.querySelector(".message-bubble");
+          return b && b.textContent.trim() === (m.content || "").trim();
+        });
+        if (match) {
+          match.setAttribute("data-msg-id", m.id);
+          state.renderedMsgIds.add(m.id);
+          if (m.client_msg_id) {
+            match.setAttribute("data-client-id", m.client_msg_id);
+            state.renderedClientMsgIds.add(m.client_msg_id);
+          }
+          return false;
+        }
+      }
+
+      return true;
+    });
 
     if (unrenderedMsgs.length > 0) {
       unrenderedMsgs.forEach(m => {
         if (m.role === "assistant") {
+          state.pendingPollingMsgIds.add(m.id);
           showTypingIndicator();
           setTimeout(() => {
+            state.pendingPollingMsgIds.delete(m.id);
             removeTypingIndicator();
             appendMessageElement("assistant", m.content, {
               id: m.id,
@@ -1051,6 +1196,7 @@ async function checkForNewMessages() {
         } else if (m.role === "user") {
           appendMessageElement("user", m.content, {
             id: m.id,
+            clientMsgId: m.client_msg_id,
             timestamp: m.deliver_at || m.created_at,
             status: m.status
           });

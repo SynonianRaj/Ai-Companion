@@ -14,11 +14,17 @@ from fastapi.staticfiles import StaticFiles
 from backend.app.core.config import settings
 import asyncio
 import logging
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
+logger = logging.getLogger("ai_companion")
+
 from backend.app.db.session import init_db
 from backend.app.api.routes import router as api_router
 from backend.app.services.scheduler_service import scheduler_service
-
-logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -78,7 +84,7 @@ if os.path.exists(frontend_dir):
 
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.environ.get("PORT", getattr(settings, "PORT", 8000)))
+    port = int(os.environ.get("PORT", getattr(settings, "PORT", 8080)))
     print(f"\n🚀 Starting AI Companion Phase 1 Prototype on port {port}...")
     print(f"📍 Web App: http://127.0.0.1:{port}")
     print(f"📖 API Docs: http://127.0.0.1:{port}/docs\n")

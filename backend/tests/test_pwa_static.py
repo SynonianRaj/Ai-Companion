@@ -44,3 +44,62 @@ async def test_frontend_pwa_files_served(client):
     # Test root manifest
     res_root_manifest = await client.get("/manifest.json")
     assert res_root_manifest.status_code == 200
+
+    # Test PWA install modal in index.html
+    assert 'id="install-pwa-btn"' in res_index.text
+    assert 'id="pwa-install-modal"' in res_index.text
+    # Verify developer log elements are NOT exposed in user-facing index.html
+    assert 'id="llm-logs-modal"' not in res_index.text
+    assert 'id="dev-logs-btn"' not in res_index.text
+
+
+@pytest.mark.asyncio
+async def test_frontend_js_syntax_validity():
+    import subprocess
+    import shutil
+    from pathlib import Path
+
+    node_bin = shutil.which("node")
+    if not node_bin:
+        pytest.skip("Node.js binary not installed on test host")
+
+    project_root = Path(__file__).resolve().parent.parent.parent
+    js_files = [
+        project_root / "frontend" / "js" / "app.js",
+        project_root / "frontend" / "js" / "api.js"
+    ]
+
+    for js_path in js_files:
+        assert js_path.exists(), f"File {js_path} does not exist"
+        proc = subprocess.run([node_bin, "-c", str(js_path)], capture_output=True, text=True)
+        assert proc.returncode == 0, f"Syntax error in {js_path.name}:\n{proc.stderr}"
+
+
+@pytest.mark.asyncio
+async def test_dev_llm_logs_endpoint(client):
+    from backend.app.engine.adapter import record_llm_interaction
+
+    # Record sample interaction
+    record_llm_interaction(
+        provider="mock",
+        model="test-model",
+        system_prompt="Test system prompt",
+        consumed_input="Hello world",
+        raw_response="Hi there",
+        parsed_chunks=["Hi there"],
+        latency_ms=12.5,
+        status="success"
+    )
+
+    res = await client.get("/api/dev/llm-logs")
+    assert res.status_code == 200
+    data = res.json()
+    assert "logs" in data
+    assert isinstance(data["logs"], list)
+    assert len(data["logs"]) >= 1
+    latest = data["logs"][0]
+    assert latest["provider"] == "mock"
+    assert latest["model"] == "test-model"
+    assert latest["system_prompt"] == "Test system prompt"
+    assert latest["consumed_input"] == "Hello world"
+    assert latest["parsed_chunks"] == ["Hi there"]

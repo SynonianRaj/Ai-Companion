@@ -20,7 +20,12 @@ from backend.app.db.session import get_db, init_db
 from backend.app.services.clock_service import ClockService
 from backend.app.main import app
 
-test_engine = create_async_engine(TEST_DB_URL, echo=False, poolclass=NullPool)
+test_engine = create_async_engine(
+    TEST_DB_URL,
+    echo=False,
+    poolclass=NullPool,
+    connect_args={"timeout": 30.0}
+)
 test_session_factory = async_sessionmaker(
     bind=test_engine,
     class_=AsyncSession,
@@ -46,6 +51,7 @@ async def setup_test_db():
     ClockService.reset()
     await init_db()
     async with test_engine.begin() as conn:
+        await conn.exec_driver_sql("PRAGMA journal_mode = WAL")
         await conn.run_sync(Base.metadata.create_all)
         await conn.exec_driver_sql("PRAGMA foreign_keys = OFF")
         for table in reversed(Base.metadata.sorted_tables):

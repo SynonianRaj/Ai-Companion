@@ -215,7 +215,8 @@ class Orchestrator:
         user_message: Optional[str] = None,
         user_messages: Optional[List[str]] = None,
         pacing_mode: str = "realistic",
-        client_msg_id: Optional[str] = None
+        client_msg_id: Optional[str] = None,
+        client_msg_ids: Optional[List[str]] = None
     ) -> Dict[str, Any]:
         async with cls.get_lock(relationship.id):
             # Process lazy side effects first
@@ -297,8 +298,14 @@ class Orchestrator:
                 crisis_payload = crisis_detector.get_crisis_handoff_response()
 
                 # Persist user messages with deliver_at=now, seen_at=now
+                user_msg_records = []
                 for idx, chunk in enumerate(raw_chunks):
-                    session.add(Message(
+                    cid = None
+                    if client_msg_ids and idx < len(client_msg_ids):
+                        cid = client_msg_ids[idx]
+                    elif idx == 0 and client_msg_id:
+                        cid = client_msg_id
+                    u_rec = Message(
                         conversation_id=conversation.id,
                         relationship_id=relationship.id,
                         user_id=user.id,
@@ -310,8 +317,10 @@ class Orchestrator:
                         seen_at=now,
                         status="active",
                         sequence_order=idx,
-                        client_msg_id=client_msg_id if idx == 0 else None
-                    ))
+                        client_msg_id=cid
+                    )
+                    session.add(u_rec)
+                    user_msg_records.append(u_rec)
 
                 # Store assistant crisis response with 0ms delay (deliver_at=now, seen_at=now)
                 asst_msg = Message(
@@ -341,6 +350,7 @@ class Orchestrator:
                         "typing_duration_seconds": 0.0,
                         "sequence_order": 0
                     }],
+                    "user_message_ids": [u.id for u in user_msg_records],
                     "crisis_handoff": crisis_payload,
                     "relationship_stage": relationship.relationship_stage,
                     "lifecycle_status": relationship.lifecycle_status,
@@ -628,6 +638,19 @@ class Orchestrator:
             if "network thoda glitch" in response.reply_text.lower():
                 response = await mock_adapter.generate_response(context)
 
+            if getattr(response, "provider", None) == "mock":
+                from backend.app.engine.adapter import record_llm_interaction
+                record_llm_interaction(
+                    provider="mock",
+                    model="template_engine",
+                    system_prompt="MockTemplateRules (Zero-Cost / Offline fallback)",
+                    consumed_input={"user_message": user_message, "recent_messages": recent_messages[-3:] if recent_messages else []},
+                    raw_response=response.reply_text,
+                    parsed_chunks=response.chunks,
+                    latency_ms=1.0,
+                    status="mock"
+                )
+
             # Post-check validation and fact contradiction check
             recent_asst_msgs = [m.get("content", "") for m in recent_messages if m.get("role") in ("assistant", "model")]
             sanitized_chunks = []
@@ -713,6 +736,11 @@ class Orchestrator:
             # Step 8: Persist User Messages (seen_at reflects when she actually opens chat)
             user_msg_records = []
             for idx, chunk in enumerate(raw_chunks):
+                cid = None
+                if client_msg_ids and idx < len(client_msg_ids):
+                    cid = client_msg_ids[idx]
+                elif idx == 0 and client_msg_id:
+                    cid = client_msg_id
                 u_rec = Message(
                     conversation_id=conversation.id,
                     relationship_id=relationship.id,
@@ -725,7 +753,7 @@ class Orchestrator:
                     seen_at=seen_at,
                     status="active",
                     sequence_order=idx,
-                    client_msg_id=client_msg_id if idx == 0 else None
+                    client_msg_id=cid
                 )
                 session.add(u_rec)
                 user_msg_records.append(u_rec)
@@ -993,6 +1021,7 @@ class Orchestrator:
                 "content": content_str,
                 "chunks": response.chunks,
                 "chunk_details": chunk_details,
+                "user_message_ids": user_msg_ids,
                 "crisis_handoff": None,
                 "relationship_stage": response.stage_transition or relationship.relationship_stage,
                 "lifecycle_status": relationship.lifecycle_status,
